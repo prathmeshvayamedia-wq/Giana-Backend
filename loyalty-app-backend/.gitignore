@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+
+# environment variables (contains your secrets — most important line here)
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# build output (if any)
+dist/
+build/
+
+# editor folders
+.vscode/
+.idea/
