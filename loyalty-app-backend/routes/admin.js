@@ -787,6 +787,2641 @@
 
 
 
+// const express = require('express');
+// const bcrypt = require('bcryptjs');
+// const jwt = require('jsonwebtoken');
+// const crypto = require('crypto');
+// const QRCode = require('qrcode');
+// const PDFDocument = require('pdfkit');
+// const supabase = require('../db');
+// const requireAdminAuth = require('../adminAuth');
+
+// const router = express.Router();
+
+// router.post('/admin/login', async (req, res) => {
+//   const { email, password } = req.body;
+
+//   if (email !== process.env.ADMIN_EMAIL) {
+//     return res.status(401).json({ error: 'Invalid credentials' });
+//   }
+
+//   const isValid = await bcrypt.compare(password || '', process.env.ADMIN_PASSWORD_HASH || '');
+//   if (!isValid) {
+//     return res.status(401).json({ error: 'Invalid credentials' });
+//   }
+
+//   const token = jwt.sign({ isAdmin: true, email }, process.env.ADMIN_JWT_SECRET, { expiresIn: '12h' });
+//   res.json({ token });
+// });
+
+// // --- Products (still useful for reporting/organization, no longer required for points) ---
+
+// router.get('/admin/products', requireAdminAuth, async (req, res) => {
+//   const { data, error } = await supabase.from('products').select('*').order('created_at', { ascending: false });
+//   if (error) return res.status(500).json({ error: 'Could not load products' });
+//   res.json(data);
+// });
+
+// router.post('/admin/products', requireAdminAuth, async (req, res) => {
+//   const { name, pointsValue } = req.body;
+//   if (!name || !Number.isInteger(pointsValue) || pointsValue <= 0) {
+//     return res.status(400).json({ error: 'Valid name and pointsValue required' });
+//   }
+
+//   const { data, error } = await supabase
+//     .from('products')
+//     .insert({ name, points_value: pointsValue })
+//     .select()
+//     .single();
+
+//   if (error) return res.status(500).json({ error: 'Could not create product' });
+//   res.json(data);
+// });
+
+// router.put('/admin/products/:id', requireAdminAuth, async (req, res) => {
+//   const { name, pointsValue } = req.body;
+//   const updates = {};
+//   if (name) updates.name = name;
+//   if (Number.isInteger(pointsValue) && pointsValue > 0) updates.points_value = pointsValue;
+
+//   if (Object.keys(updates).length === 0) {
+//     return res.status(400).json({ error: 'Nothing to update' });
+//   }
+
+//   const { data, error } = await supabase
+//     .from('products')
+//     .update(updates)
+//     .eq('id', req.params.id)
+//     .select()
+//     .single();
+
+//   if (error) return res.status(500).json({ error: 'Could not update product' });
+//   res.json(data);
+// });
+
+// // --- Redemption requests ---
+// // (the full GET /admin/redemptions handler — with bank_details, TDS, etc.
+// // — lives further down, alongside the approve/reject/retry routes, so
+// // there's only one definition instead of two competing ones)
+
+// // --- QR codes ---
+
+// function generateCode() {
+//   return 'GNA-' + crypto.randomBytes(5).toString('hex').toUpperCase();
+// }
+
+// // THE FIX: pointsValue now comes directly from the request, not from a
+// // product lookup. productId is optional - only used for organizing/reporting.
+// router.post('/admin/qr/generate', requireAdminAuth, async (req, res) => {
+//   const { pointsValue, quantity, label, productId } = req.body;
+
+//   if (!Number.isInteger(pointsValue) || pointsValue <= 0) {
+//     return res.status(400).json({ error: 'Valid pointsValue required (whole number, greater than 0)' });
+//   }
+//   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 5000) {
+//     return res.status(400).json({ error: 'quantity must be between 1 and 5000' });
+//   }
+//   if (!label || !label.trim()) {
+//     return res.status(400).json({ error: 'label required, e.g. "Pune-Aug2026-50pts"' });
+//   }
+
+//   const { data: batch, error: batchError } = await supabase
+//     .from('qr_batches')
+//     .insert({
+//       product_id: productId || null,
+//       label: label.trim(),
+//       quantity,
+//       points_value: pointsValue,
+//     })
+//     .select()
+//     .single();
+
+//   if (batchError) {
+//     console.error('Supabase batch insert error:', batchError);
+//     return res.status(500).json({ error: 'Could not create batch' });
+//   }
+
+//   const codes = [];
+//   for (let i = 0; i < quantity; i++) {
+//     codes.push({
+//       code: generateCode(),
+//       points_value: pointsValue,
+//       product_id: productId || null,
+//       batch_id: batch.id,
+//     });
+//   }
+
+//   const { error: insertError } = await supabase.from('qr_codes').insert(codes);
+
+//   if (insertError) {
+//     console.error('Supabase qr_codes insert error:', insertError);
+//     return res.status(500).json({ error: 'Could not create QR codes, please try again' });
+//   }
+
+//   res.json({
+//     batchId: batch.id,
+//     label: batch.label,
+//     quantity,
+//     pointsValue,
+//     message: `${quantity} QR codes generated, ${pointsValue} points each`,
+//   });
+// });
+
+// router.get('/admin/qr/batches', requireAdminAuth, async (req, res) => {
+//   const { data, error } = await supabase
+//     .from('qr_batches')
+//     .select('*, products(name)')
+//     .order('created_at', { ascending: false });
+
+//   if (error) return res.status(500).json({ error: 'Could not load batches' });
+//   res.json(data);
+// });
+
+// // Print-ready, WhatsApp-shareable PDF. Accepts the admin token either as a
+// // normal Authorization header OR as ?token=... in the URL - the second form
+// // lets you paste the link straight into a browser tab and download it,
+// // since browsers can't attach custom headers when you just click a link.
+// router.get('/admin/qr/batches/:id/pdf', requireAdminAuth, async (req, res) => {
+//   const { data: batch, error: batchError } = await supabase
+//     .from('qr_batches')
+//     .select('*, products(name)')
+//     .eq('id', req.params.id)
+//     .single();
+
+//   if (batchError || !batch) return res.status(404).json({ error: 'Batch not found' });
+
+//   const { data: codes, error: codesError } = await supabase
+//     .from('qr_codes')
+//     .select('code, points_value')
+//     .eq('batch_id', req.params.id)
+//     .order('created_at', { ascending: true });
+
+//   if (codesError) return res.status(500).json({ error: 'Could not load QR codes' });
+
+//   const safeFilename = batch.label.replace(/[^a-z0-9]/gi, '_');
+//   res.setHeader('Content-Type', 'application/pdf');
+//   res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}.pdf"`);
+
+//   const doc = new PDFDocument({ size: 'A4', margin: 30 });
+//   doc.pipe(res);
+
+//   const qrSize = 120;
+//   const cols = 4;
+//   const marginX = 30;
+//   const cellWidth = (doc.page.width - marginX * 2) / cols;
+
+//   const productLabel = batch.products?.name ? ` (${batch.products.name})` : '';
+//   doc.fontSize(14).text(`${batch.label}${productLabel} - ${batch.points_value} pts each`, { align: 'center' });
+//   doc.moveDown();
+
+//   let y = doc.y + 10;
+//   let col = 0;
+
+//   for (const { code, points_value } of codes) {
+//     const qrImage = await QRCode.toDataURL(code, { margin: 0, width: qrSize });
+//     const imgBuffer = Buffer.from(qrImage.split(',')[1], 'base64');
+
+//     if (y + qrSize + 30 > doc.page.height - 40) {
+//       doc.addPage();
+//       y = 40;
+//       col = 0;
+//     }
+
+//     const x = marginX + col * cellWidth + (cellWidth - qrSize) / 2;
+//     doc.image(imgBuffer, x, y, { width: qrSize, height: qrSize });
+//     doc.fontSize(8).text(code, marginX + col * cellWidth, y + qrSize + 4, { width: cellWidth, align: 'center' });
+//     doc
+//       .fontSize(8)
+//       .fillColor('#0B4A47')
+//       .text(`${points_value} pts`, marginX + col * cellWidth, y + qrSize + 16, { width: cellWidth, align: 'center' })
+//       .fillColor('black');
+
+//     col++;
+//     if (col >= cols) {
+//       col = 0;
+//       y += qrSize + 40;
+//     }
+//   }
+
+//   doc.end();
+// });
+
+// /**
+//  * Giana Ledger — new admin routes
+//  * ---------------------------------------------------------------------
+//  * Paste these into your existing `routes/admin.js`, on the same router
+//  * that already serves `/admin/login`, `/admin/products`, `/admin/qr/*`,
+//  * and `/admin/redemptions`. They assume:
+//  *
+//  *   - `router`            an express.Router() already mounted at /api/admin
+//  *   - `requireAdminAuth`  your existing auth middleware
+//  *   - `supabase`          your existing @supabase/supabase-js client
+//  *
+//  * If your file imports/names these differently, just adjust the top of
+//  * this snippet — the route bodies don't need to change.
+//  *
+//  * Every response shape here matches what the admin frontend already
+//  * calls via src/api/client.js (listUsers, getUser, listTransactions,
+//  * listBatchCodes, listQrCodes, listBankDetails, listOtpVerifications) —
+//  * no frontend changes needed once these are live.
+//  *
+//  * Routes included below:
+//  *   GET   /admin/users
+//  *   GET   /admin/users/:id
+//  *   GET   /admin/transactions
+//  *   GET   /admin/qr/batches/:id/codes
+//  *   GET   /admin/qr-codes                    (server-paginated, all batches)
+//  *   PATCH /admin/qr-codes/:code               enable/disable one code
+//  *   PATCH /admin/qr/batches/:id/toggle-active enable/disable a whole batch
+//  *   GET   /admin/bank-details
+//  *   GET   /admin/otp-verifications           (never selects otp_hash)
+//  *   GET   /admin/redemptions                 (UPDATED — replace your existing one)
+//  *   PATCH /admin/redemptions/:id             approve / reject a request
+//  *   POST  /admin/redemptions/:id/retry       re-queue a failed payout
+//  *   POST  /admin/users/:id/adjust-points     manual points credit/debit
+//  *   PATCH /admin/users/:id/kyc               verify / reject KYC
+//  *   GET   /admin/activity-log                audit trail of the above
+//  *
+//  * IMPORTANT — two schema changes required:
+//  *
+//  * 1) `admin_actions` table (logs every write action above):
+//  *
+//  *   CREATE TABLE public.admin_actions (
+//  *     id uuid NOT NULL DEFAULT gen_random_uuid(),
+//  *     admin_email text NOT NULL,
+//  *     action_type text NOT NULL,
+//  *     target_type text NOT NULL,
+//  *     target_id text,
+//  *     details jsonb,
+//  *     created_at timestamp with time zone NOT NULL DEFAULT now(),
+//  *     CONSTRAINT admin_actions_pkey PRIMARY KEY (id)
+//  *   );
+//  *
+//  * 2) `active` column on qr_codes (lets admin disable individual codes or
+//  *    whole batches):
+//  *
+//  *   ALTER TABLE public.qr_codes ADD COLUMN active boolean NOT NULL DEFAULT true;
+//  *
+//  * CRITICAL — this repo doesn't include your customer-facing scan/redeem
+//  * routes, so the `active` column and disable/enable buttons in the admin
+//  * panel do NOTHING on their own yet. Your scan endpoint (wherever a user
+//  * redeems a QR code) needs one extra check:
+//  *
+//  *   const { data: qr } = await supabase
+//  *     .from('qr_codes')
+//  *     .select('*')
+//  *     .eq('code', scannedCode)
+//  *     .single();
+//  *
+//  *   if (!qr.active) {
+//  *     return res.status(403).json({ error: 'This QR code has been disabled' });
+//  *   }
+//  *   // ...then your existing used/points logic
+//  *
+//  * Share that route file and it can be wired in directly, same as this one.
+//  *
+//  * `logAdminAction` below assumes `req.admin.email` is set by your
+//  * `requireAdminAuth` middleware (the same way it must already know the
+//  * admin's email to have issued the JWT at /admin/login). Adjust the
+//  * property name if your middleware attaches it differently.
+//  * ---------------------------------------------------------------------
+//  */
+
+// // const router = require('express').Router();
+// // const { supabase } = require('../lib/supabase'); // <- adjust to your setup
+// // const { requireAdminAuth } = require('../middleware/auth');       // <- adjust to your setup
+
+// // ============================================================
+// // GET /admin/users
+// // Full user directory. Powers the Users page and the dashboard's
+// // "points in circulation" stat.
+// // ============================================================
+// router.get('/admin/users', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('users')
+//       .select('id, phone, name, points, kyc_status, kyc_reference_id, pan_number, upi_id, profile_photo_url, created_at')
+//       .order('created_at', { ascending: false });
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/users failed:', err);
+//     res.status(500).json({ error: 'Could not load users' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/users/:id
+// // One user's full profile: their row, their bank_details (or null if
+// // they haven't added a payout method), their recent transactions, and
+// // their recent redemption requests. Powers the Users page detail drawer.
+// // ============================================================
+// router.get('/admin/users/:id', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+
+//   try {
+//     const [userRes, bankRes, txnRes, redemptionRes] = await Promise.all([
+//       supabase.from('users').select('*').eq('id', id).single(),
+//       supabase.from('bank_details').select('*').eq('user_id', id).maybeSingle(),
+//       supabase
+//         .from('transactions')
+//         .select('id, type, points, qr_code, latitude, longitude, location_address, created_at')
+//         .eq('user_id', id)
+//         .order('created_at', { ascending: false })
+//         .limit(50),
+//       supabase
+//         .from('redemption_requests')
+//         .select(
+//           'id, points_redeemed, amount_inr, gross_amount_inr, tds_amount_inr, status, failure_reason, razorpay_payout_id, cashfree_transfer_id, latitude, longitude, location_address, created_at, updated_at'
+//         )
+//         .eq('user_id', id)
+//         .order('created_at', { ascending: false })
+//         .limit(50),
+//     ]);
+
+//     if (userRes.error) throw userRes.error;
+//     if (!userRes.data) return res.status(404).json({ error: 'User not found' });
+//     if (bankRes.error) throw bankRes.error;
+//     if (txnRes.error) throw txnRes.error;
+//     if (redemptionRes.error) throw redemptionRes.error;
+
+//     res.json({
+//       user: userRes.data,
+//       bank_details: bankRes.data || null,
+//       transactions: txnRes.data || [],
+//       redemptions: redemptionRes.data || [],
+//     });
+//   } catch (err) {
+//     console.error(`GET /admin/users/${id} failed:`, err);
+//     res.status(500).json({ error: 'Could not load user' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/transactions
+// // Every point transaction, newest first, with the user's name/phone
+// // joined in (same join pattern as the existing /admin/redemptions
+// // route). Powers the Transactions page.
+// // ============================================================
+// router.get('/admin/transactions', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('transactions')
+//       .select('id, type, points, qr_code, latitude, longitude, location_address, created_at, users ( name, phone )')
+//       .order('created_at', { ascending: false })
+//       .limit(500);
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/transactions failed:', err);
+//     res.status(500).json({ error: 'Could not load transactions' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/qr/batches/:id/codes
+// // Every code in one batch, with who scanned it (if anyone). Powers the
+// // "Codes" drawer on the QR Batches page.
+// // ============================================================
+// router.get('/admin/qr/batches/:id/codes', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+
+//   try {
+//     const { data, error } = await supabase
+//       .from('qr_codes')
+//       // qr_codes.used_by -> users.id — the constraint name below comes
+//       // straight from your schema (qr_codes_used_by_fkey). Aliased to
+//       // used_by_user so it doesn't clash with the raw `used_by` uuid.
+//       .select('code, used, used_at, active, used_by_user:users!qr_codes_used_by_fkey ( name, phone )')
+//       .eq('batch_id', id)
+//       .order('code', { ascending: true });
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`GET /admin/qr/batches/${id}/codes failed:`, err);
+//     res.status(500).json({ error: 'Could not load codes' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/redemptions  (UPDATED)
+// // Replace your existing handler with this one — same path, but now
+// // selects the full redemption_requests schema (gross amount, TDS,
+// // payout references, failure reason) and joins in the requester's
+// // bank_details so the admin panel can show payout info without a
+// // second request.
+// // ============================================================
+// router.get('/admin/redemptions', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .select(
+//         `
+//         id,
+//         points_redeemed,
+//         amount_inr,
+//         gross_amount_inr,
+//         tds_amount_inr,
+//         status,
+//         failure_reason,
+//         cashfree_transfer_id,
+//         razorpay_payout_id,
+//         latitude,
+//         longitude,
+//         location_address,
+//         created_at,
+//         updated_at,
+//         users (
+//           id,
+//           name,
+//           phone,
+//           bank_details ( method, account_holder_name, upi_id, account_number, ifsc_code, verified )
+//         )
+//       `
+//       )
+//       .order('created_at', { ascending: false })
+//       .limit(100);
+
+//     if (error) throw error;
+
+//     // Supabase nests bank_details under users(); the frontend reads it
+//     // as a sibling field (`r.bank_details`), so flatten it here.
+//     const shaped = (data || []).map((row) => {
+//       const { users, ...rest } = row;
+//       const { bank_details, ...userFields } = users || {};
+//       return { ...rest, users: userFields, bank_details: bank_details || null };
+//     });
+
+//     res.json(shaped);
+//   } catch (err) {
+//     console.error('GET /admin/redemptions failed:', err);
+//     res.status(500).json({ error: 'Could not load redemptions' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/qr-codes
+// // Server-paginated, filterable view across ALL qr_codes (not just one
+// // batch) — this table can run into the tens of thousands of rows, so it
+// // is never fetched in full. Query params: page, pageSize, q (searches
+// // the code string), batchId, status ('used' | 'unused'), active
+// // ('active' | 'inactive'). Powers the standalone QR Codes page.
+// // ============================================================
+// router.get('/admin/qr-codes', requireAdminAuth, async (req, res) => {
+//   try {
+//     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+//     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize, 10) || 20));
+//     const { q, batchId, status, active } = req.query;
+
+//     let query = supabase
+//       .from('qr_codes')
+//       .select(
+//         'code, points_value, used, used_at, active, used_by_user:users!qr_codes_used_by_fkey ( name, phone )',
+//         { count: 'exact' }
+//       );
+
+//     if (q) query = query.ilike('code', `%${q}%`);
+//     if (batchId) query = query.eq('batch_id', batchId);
+//     if (status === 'used') query = query.eq('used', true);
+//     if (status === 'unused') query = query.eq('used', false);
+//     if (active === 'active') query = query.eq('active', true);
+//     if (active === 'inactive') query = query.eq('active', false);
+
+//     const from = (page - 1) * pageSize;
+//     const to = from + pageSize - 1;
+//     query = query.order('code', { ascending: true }).range(from, to);
+
+//     const [{ data, error, count }, totalRes, usedRes, inactiveRes] = await Promise.all([
+//       query,
+//       supabase.from('qr_codes').select('code', { count: 'exact', head: true }),
+//       supabase.from('qr_codes').select('code', { count: 'exact', head: true }).eq('used', true),
+//       supabase.from('qr_codes').select('code', { count: 'exact', head: true }).eq('active', false),
+//     ]);
+
+//     if (error) throw error;
+//     if (totalRes.error) throw totalRes.error;
+//     if (usedRes.error) throw usedRes.error;
+//     if (inactiveRes.error) throw inactiveRes.error;
+
+//     const total = count || 0;
+//     const globalTotal = totalRes.count || 0;
+//     const globalUsed = usedRes.count || 0;
+//     const globalInactive = inactiveRes.count || 0;
+
+//     res.json({
+//       items: data || [],
+//       page,
+//       pageSize,
+//       total,
+//       pageCount: Math.max(1, Math.ceil(total / pageSize)),
+//       stats: {
+//         total: globalTotal,
+//         used: globalUsed,
+//         unused: globalTotal - globalUsed,
+//         inactive: globalInactive,
+//       },
+//     });
+//   } catch (err) {
+//     console.error('GET /admin/qr-codes failed:', err);
+//     res.status(500).json({ error: 'Could not load QR codes' });
+//   }
+// });
+
+// // ============================================================
+// // PATCH /admin/qr-codes/:code
+// // Body: { active: boolean }
+// // Enables or disables a single QR code. A disabled code must be rejected
+// // by your customer-facing scan/redeem endpoint — see the note at the top
+// // of this file for the exact check to add there.
+// // ============================================================
+// router.patch('/admin/qr-codes/:code', requireAdminAuth, async (req, res) => {
+//   const { code } = req.params;
+//   const { active } = req.body || {};
+
+//   if (typeof active !== 'boolean') {
+//     return res.status(400).json({ error: 'active must be true or false' });
+//   }
+
+//   try {
+//     const { data, error } = await supabase
+//       .from('qr_codes')
+//       .update({ active })
+//       .eq('code', code)
+//       .select('code, active')
+//       .single();
+
+//     if (error) throw error;
+//     if (!data) return res.status(404).json({ error: 'Code not found' });
+
+//     await logAdminAction(req, active ? 'qr_code_enabled' : 'qr_code_disabled', 'qr_codes', code, {});
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`PATCH /admin/qr-codes/${code} failed:`, err);
+//     res.status(500).json({ error: 'Could not update this code' });
+//   }
+// });
+
+// // ============================================================
+// // PATCH /admin/qr/batches/:id/toggle-active
+// // Body: { active: boolean }
+// // Bulk enables/disables every code in one batch — e.g. if a batch was
+// // printed by mistake or needs to be pulled from circulation.
+// // ============================================================
+// router.patch('/admin/qr/batches/:id/toggle-active', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { active } = req.body || {};
+
+//   if (typeof active !== 'boolean') {
+//     return res.status(400).json({ error: 'active must be true or false' });
+//   }
+
+//   try {
+//     const { error, count } = await supabase
+//       .from('qr_codes')
+//       .update({ active })
+//       .eq('batch_id', id)
+//       .select('code', { count: 'exact', head: true });
+
+//     if (error) throw error;
+
+//     await logAdminAction(req, active ? 'batch_enabled' : 'batch_disabled', 'qr_batches', id, {
+//       codes_affected: count || 0,
+//     });
+
+//     res.json({ batchId: id, active, codesAffected: count || 0 });
+//   } catch (err) {
+//     console.error(`PATCH /admin/qr/batches/${id}/toggle-active failed:`, err);
+//     res.status(500).json({ error: 'Could not update this batch' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/bank-details
+// // Every payout method on file, with the owning user's name/phone
+// // joined in. Powers the Payout Methods page.
+// // ============================================================
+// router.get('/admin/bank-details', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('bank_details')
+//       .select(
+//         'id, method, account_holder_name, upi_id, account_number, ifsc_code, verified, created_at, updated_at, users ( name, phone )'
+//       )
+//       .order('created_at', { ascending: false });
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/bank-details failed:', err);
+//     res.status(500).json({ error: 'Could not load bank details' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/otp-verifications
+// // Recent OTP requests, for support/abuse debugging. Deliberately never
+// // selects otp_hash — that column should never leave the database, even
+// // to an authenticated admin session. Powers the OTP Verifications page.
+// // ============================================================
+// router.get('/admin/otp-verifications', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('otp_verifications')
+//       .select('id, phone, verified, attempts, expires_at, created_at') // no otp_hash, on purpose
+//       .order('created_at', { ascending: false })
+//       .limit(200);
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/otp-verifications failed:', err);
+//     res.status(500).json({ error: 'Could not load OTP verifications' });
+//   }
+// });
+
+// // ============================================================
+// // logAdminAction — writes one row to admin_actions. Every write route
+// // below calls this after its main write succeeds, so a logging failure
+// // never blocks the actual action; it's swallowed and just logged.
+// // ============================================================
+// async function logAdminAction(req, actionType, targetType, targetId, details) {
+//   try {
+//     await supabase.from('admin_actions').insert({
+//       admin_email: req.admin?.email || 'unknown',
+//       action_type: actionType,
+//       target_type: targetType,
+//       target_id: targetId ? String(targetId) : null,
+//       details: details || {},
+//     });
+//   } catch (err) {
+//     console.error('logAdminAction failed (action itself still succeeded):', err);
+//   }
+// }
+
+// // ============================================================
+// // PATCH /admin/redemptions/:id
+// // Body: { status: 'approved' | 'rejected', note?: string }
+// // Approves or rejects a pending redemption request. On reject, `note` is
+// // stored as failure_reason. Powers the Approve/Reject buttons on the
+// // Redemptions page.
+// // ============================================================
+// router.patch('/admin/redemptions/:id', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { status, note } = req.body || {};
+
+//   if (!['approved', 'rejected'].includes(status)) {
+//     return res.status(400).json({ error: 'status must be "approved" or "rejected"' });
+//   }
+
+//   try {
+//     const updates = { status, updated_at: new Date().toISOString() };
+//     if (status === 'rejected') updates.failure_reason = note || null;
+
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .update(updates)
+//       .eq('id', id)
+//       .select()
+//       .single();
+
+//     if (error) throw error;
+
+//     await logAdminAction(req, `redemption_${status}`, 'redemption_requests', id, { note });
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`PATCH /admin/redemptions/${id} failed:`, err);
+//     res.status(500).json({ error: 'Could not update redemption' });
+//   }
+// });
+
+// // ============================================================
+// // POST /admin/redemptions/:id/retry
+// // Resets a failed redemption back to 'pending' so your payout worker
+// // picks it up again, and clears the previous failure_reason. This does
+// // NOT re-trigger Razorpay/Cashfree itself — wire that call in wherever
+// // this comment is, using your existing payout integration.
+// // ============================================================
+// router.post('/admin/redemptions/:id/retry', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+
+//   try {
+//     const { data: existing, error: fetchError } = await supabase
+//       .from('redemption_requests')
+//       .select('status')
+//       .eq('id', id)
+//       .single();
+//     if (fetchError) throw fetchError;
+//     if (!existing) return res.status(404).json({ error: 'Redemption not found' });
+//     if (existing.status !== 'failed') {
+//       return res.status(400).json({ error: 'Only failed redemptions can be retried' });
+//     }
+
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .update({ status: 'pending', failure_reason: null, updated_at: new Date().toISOString() })
+//       .eq('id', id)
+//       .select()
+//       .single();
+//     if (error) throw error;
+
+//     // TODO: call your Razorpay/Cashfree payout trigger here so the retry
+//     // actually re-attempts the transfer, not just resets the DB status.
+
+//     await logAdminAction(req, 'redemption_retry', 'redemption_requests', id, {});
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`POST /admin/redemptions/${id}/retry failed:`, err);
+//     res.status(500).json({ error: 'Could not retry payout' });
+//   }
+// });
+
+// // ============================================================
+// // POST /admin/users/:id/adjust-points
+// // Body: { delta: number, reason: string }
+// // Manually credits (positive delta) or debits (negative delta) a user's
+// // points balance — e.g. refunding a support complaint. Writes a
+// // transactions row (type: 'admin_adjustment') so it shows up in that
+// // user's history and the Transactions page, same as any other point
+// // movement. Powers "Adjust points" on the Users page.
+// // ============================================================
+// router.post('/admin/users/:id/adjust-points', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { delta, reason } = req.body || {};
+
+//   if (!delta || typeof delta !== 'number' || Number.isNaN(delta)) {
+//     return res.status(400).json({ error: 'delta must be a non-zero number' });
+//   }
+//   if (!reason || !reason.trim()) {
+//     return res.status(400).json({ error: 'reason is required' });
+//   }
+
+//   try {
+//     const { data: user, error: userError } = await supabase
+//       .from('users')
+//       .select('points')
+//       .eq('id', id)
+//       .single();
+//     if (userError) throw userError;
+//     if (!user) return res.status(404).json({ error: 'User not found' });
+
+//     const newBalance = (user.points || 0) + delta;
+//     if (newBalance < 0) {
+//       return res.status(400).json({ error: 'This would take the user below zero points' });
+//     }
+
+//     const { error: updateError } = await supabase.from('users').update({ points: newBalance }).eq('id', id);
+//     if (updateError) throw updateError;
+
+//     const { error: txnError } = await supabase.from('transactions').insert({
+//       user_id: id,
+//       type: 'admin_adjustment',
+//       points: delta,
+//       qr_code: null,
+//     });
+//     if (txnError) throw txnError;
+
+//     await logAdminAction(req, 'points_adjusted', 'users', id, { delta, reason, new_balance: newBalance });
+
+//     res.json({ points: newBalance });
+//   } catch (err) {
+//     console.error(`POST /admin/users/${id}/adjust-points failed:`, err);
+//     res.status(500).json({ error: 'Could not adjust points' });
+//   }
+// });
+
+// // ============================================================
+// // PATCH /admin/users/:id/kyc
+// // Body: { kycStatus: 'verified' | 'rejected', reason?: string }
+// // Powers "Verify KYC" / "Reject KYC" on the Users page.
+// // ============================================================
+// router.patch('/admin/users/:id/kyc', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { kycStatus, reason } = req.body || {};
+
+//   if (!['verified', 'rejected', 'pending'].includes(kycStatus)) {
+//     return res.status(400).json({ error: 'kycStatus must be "verified", "rejected", or "pending"' });
+//   }
+
+//   try {
+//     const { data, error } = await supabase
+//       .from('users')
+//       .update({ kyc_status: kycStatus })
+//       .eq('id', id)
+//       .select()
+//       .single();
+//     if (error) throw error;
+//     if (!data) return res.status(404).json({ error: 'User not found' });
+
+//     await logAdminAction(req, `kyc_${kycStatus}`, 'users', id, { reason });
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`PATCH /admin/users/${id}/kyc failed:`, err);
+//     res.status(500).json({ error: 'Could not update KYC status' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/activity-log
+// // Every admin_actions row, newest first. Powers the Activity Log page.
+// // ============================================================
+// router.get('/admin/activity-log', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('admin_actions')
+//       .select('id, admin_email, action_type, target_type, target_id, details, created_at')
+//       .order('created_at', { ascending: false })
+//       .limit(300);
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/activity-log failed:', err);
+//     res.status(500).json({ error: 'Could not load activity log' });
+//   }
+// });
+
+// module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// const express = require('express');
+// const bcrypt = require('bcryptjs');
+// const jwt = require('jsonwebtoken');
+// const crypto = require('crypto');
+// const QRCode = require('qrcode');
+// const PDFDocument = require('pdfkit');
+// const supabase = require('../db');
+// const requireAdminAuth = require('../adminAuth');
+
+// const router = express.Router();
+
+// router.post('/admin/login', async (req, res) => {
+//   const { email, password } = req.body;
+
+//   if (email !== process.env.ADMIN_EMAIL) {
+//     return res.status(401).json({ error: 'Invalid credentials' });
+//   }
+
+//   const isValid = await bcrypt.compare(password || '', process.env.ADMIN_PASSWORD_HASH || '');
+//   if (!isValid) {
+//     return res.status(401).json({ error: 'Invalid credentials' });
+//   }
+
+//   const token = jwt.sign({ isAdmin: true, email }, process.env.ADMIN_JWT_SECRET, { expiresIn: '12h' });
+//   res.json({ token });
+// });
+
+// // --- Products (still useful for reporting/organization, no longer required for points) ---
+
+// router.get('/admin/products', requireAdminAuth, async (req, res) => {
+//   const { data, error } = await supabase.from('products').select('*').order('created_at', { ascending: false });
+//   if (error) return res.status(500).json({ error: 'Could not load products' });
+//   res.json(data);
+// });
+
+// router.post('/admin/products', requireAdminAuth, async (req, res) => {
+//   const { name, pointsValue } = req.body;
+//   if (!name || !Number.isInteger(pointsValue) || pointsValue <= 0) {
+//     return res.status(400).json({ error: 'Valid name and pointsValue required' });
+//   }
+
+//   const { data, error } = await supabase
+//     .from('products')
+//     .insert({ name, points_value: pointsValue })
+//     .select()
+//     .single();
+
+//   if (error) return res.status(500).json({ error: 'Could not create product' });
+//   res.json(data);
+// });
+
+// router.put('/admin/products/:id', requireAdminAuth, async (req, res) => {
+//   const { name, pointsValue } = req.body;
+//   const updates = {};
+//   if (name) updates.name = name;
+//   if (Number.isInteger(pointsValue) && pointsValue > 0) updates.points_value = pointsValue;
+
+//   if (Object.keys(updates).length === 0) {
+//     return res.status(400).json({ error: 'Nothing to update' });
+//   }
+
+//   const { data, error } = await supabase
+//     .from('products')
+//     .update(updates)
+//     .eq('id', req.params.id)
+//     .select()
+//     .single();
+
+//   if (error) return res.status(500).json({ error: 'Could not update product' });
+//   res.json(data);
+// });
+
+// // --- Redemption requests ---
+// // (the full GET /admin/redemptions handler — with bank_details, TDS, etc.
+// // — lives further down, alongside the approve/reject/retry routes, so
+// // there's only one definition instead of two competing ones)
+
+// // --- QR codes ---
+
+// function generateCode() {
+//   return 'GNA-' + crypto.randomBytes(5).toString('hex').toUpperCase();
+// }
+
+// // THE FIX: pointsValue now comes directly from the request, not from a
+// // product lookup. productId is optional - only used for organizing/reporting.
+// router.post('/admin/qr/generate', requireAdminAuth, async (req, res) => {
+//   const { pointsValue, quantity, label, productId } = req.body;
+
+//   if (!Number.isInteger(pointsValue) || pointsValue <= 0) {
+//     return res.status(400).json({ error: 'Valid pointsValue required (whole number, greater than 0)' });
+//   }
+//   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 5000) {
+//     return res.status(400).json({ error: 'quantity must be between 1 and 5000' });
+//   }
+//   if (!label || !label.trim()) {
+//     return res.status(400).json({ error: 'label required, e.g. "Pune-Aug2026-50pts"' });
+//   }
+
+//   const { data: batch, error: batchError } = await supabase
+//     .from('qr_batches')
+//     .insert({
+//       product_id: productId || null,
+//       label: label.trim(),
+//       quantity,
+//       points_value: pointsValue,
+//     })
+//     .select()
+//     .single();
+
+//   if (batchError) {
+//     console.error('Supabase batch insert error:', batchError);
+//     return res.status(500).json({ error: 'Could not create batch' });
+//   }
+
+//   const codes = [];
+//   for (let i = 0; i < quantity; i++) {
+//     codes.push({
+//       code: generateCode(),
+//       points_value: pointsValue,
+//       product_id: productId || null,
+//       batch_id: batch.id,
+//     });
+//   }
+
+//   const { error: insertError } = await supabase.from('qr_codes').insert(codes);
+
+//   if (insertError) {
+//     console.error('Supabase qr_codes insert error:', insertError);
+//     return res.status(500).json({ error: 'Could not create QR codes, please try again' });
+//   }
+
+//   res.json({
+//     batchId: batch.id,
+//     label: batch.label,
+//     quantity,
+//     pointsValue,
+//     message: `${quantity} QR codes generated, ${pointsValue} points each`,
+//   });
+// });
+
+// router.get('/admin/qr/batches', requireAdminAuth, async (req, res) => {
+//   const { data, error } = await supabase
+//     .from('qr_batches')
+//     .select('*, products(name)')
+//     .order('created_at', { ascending: false });
+
+//   if (error) return res.status(500).json({ error: 'Could not load batches' });
+//   res.json(data);
+// });
+
+// // Print-ready, WhatsApp-shareable PDF. Accepts the admin token either as a
+// // normal Authorization header OR as ?token=... in the URL - the second form
+// // lets you paste the link straight into a browser tab and download it,
+// // since browsers can't attach custom headers when you just click a link.
+// router.get('/admin/qr/batches/:id/pdf', requireAdminAuth, async (req, res) => {
+//   const { data: batch, error: batchError } = await supabase
+//     .from('qr_batches')
+//     .select('*, products(name)')
+//     .eq('id', req.params.id)
+//     .single();
+
+//   if (batchError || !batch) return res.status(404).json({ error: 'Batch not found' });
+
+//   const { data: codes, error: codesError } = await supabase
+//     .from('qr_codes')
+//     .select('code, points_value')
+//     .eq('batch_id', req.params.id)
+//     .order('created_at', { ascending: true });
+
+//   if (codesError) return res.status(500).json({ error: 'Could not load QR codes' });
+
+//   const safeFilename = batch.label.replace(/[^a-z0-9]/gi, '_');
+//   res.setHeader('Content-Type', 'application/pdf');
+//   res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}.pdf"`);
+
+//   const doc = new PDFDocument({ size: 'A4', margin: 30 });
+//   doc.pipe(res);
+
+//   const qrSize = 120;
+//   const cols = 4;
+//   const marginX = 30;
+//   const cellWidth = (doc.page.width - marginX * 2) / cols;
+
+//   const productLabel = batch.products?.name ? ` (${batch.products.name})` : '';
+//   doc.fontSize(14).text(`${batch.label}${productLabel} - ${batch.points_value} pts each`, { align: 'center' });
+//   doc.moveDown();
+
+//   let y = doc.y + 10;
+//   let col = 0;
+
+//   for (const { code, points_value } of codes) {
+//     const qrImage = await QRCode.toDataURL(code, { margin: 0, width: qrSize });
+//     const imgBuffer = Buffer.from(qrImage.split(',')[1], 'base64');
+
+//     if (y + qrSize + 30 > doc.page.height - 40) {
+//       doc.addPage();
+//       y = 40;
+//       col = 0;
+//     }
+
+//     const x = marginX + col * cellWidth + (cellWidth - qrSize) / 2;
+//     doc.image(imgBuffer, x, y, { width: qrSize, height: qrSize });
+//     doc.fontSize(8).text(code, marginX + col * cellWidth, y + qrSize + 4, { width: cellWidth, align: 'center' });
+//     doc
+//       .fontSize(8)
+//       .fillColor('#0B4A47')
+//       .text(`${points_value} pts`, marginX + col * cellWidth, y + qrSize + 16, { width: cellWidth, align: 'center' })
+//       .fillColor('black');
+
+//     col++;
+//     if (col >= cols) {
+//       col = 0;
+//       y += qrSize + 40;
+//     }
+//   }
+
+//   doc.end();
+// });
+
+// /**
+//  * Giana Ledger — new admin routes
+//  * ---------------------------------------------------------------------
+//  * Paste these into your existing `routes/admin.js`, on the same router
+//  * that already serves `/admin/login`, `/admin/products`, `/admin/qr/*`,
+//  * and `/admin/redemptions`. They assume:
+//  *
+//  *   - `router`            an express.Router() already mounted at /api/admin
+//  *   - `requireAdminAuth`  your existing auth middleware
+//  *   - `supabase`          your existing @supabase/supabase-js client
+//  *
+//  * If your file imports/names these differently, just adjust the top of
+//  * this snippet — the route bodies don't need to change.
+//  *
+//  * Every response shape here matches what the admin frontend already
+//  * calls via src/api/client.js (listUsers, getUser, listTransactions,
+//  * listBatchCodes, listQrCodes, listBankDetails, listOtpVerifications) —
+//  * no frontend changes needed once these are live.
+//  *
+//  * Routes included below:
+//  *   GET   /admin/users
+//  *   GET   /admin/users/:id
+//  *   GET   /admin/transactions
+//  *   GET   /admin/qr/batches/:id/codes
+//  *   GET   /admin/qr-codes                    (server-paginated, all batches)
+//  *   PATCH /admin/qr-codes/:code               enable/disable one code
+//  *   PATCH /admin/qr/batches/:id/toggle-active enable/disable a whole batch
+//  *   GET   /admin/bank-details
+//  *   GET   /admin/otp-verifications           (never selects otp_hash)
+//  *   GET   /admin/redemptions                 (UPDATED — replace your existing one)
+//  *   PATCH /admin/redemptions/:id             approve / reject a request
+//  *   POST  /admin/redemptions/:id/retry       re-queue a failed payout
+//  *   POST  /admin/users/:id/adjust-points     manual points credit/debit
+//  *   PATCH /admin/users/:id/kyc               verify / reject KYC
+//  *   GET   /admin/activity-log                audit trail of the above
+//  *
+//  * IMPORTANT — two schema changes required:
+//  *
+//  * 1) `admin_actions` table (logs every write action above):
+//  *
+//  *   CREATE TABLE public.admin_actions (
+//  *     id uuid NOT NULL DEFAULT gen_random_uuid(),
+//  *     admin_email text NOT NULL,
+//  *     action_type text NOT NULL,
+//  *     target_type text NOT NULL,
+//  *     target_id text,
+//  *     details jsonb,
+//  *     created_at timestamp with time zone NOT NULL DEFAULT now(),
+//  *     CONSTRAINT admin_actions_pkey PRIMARY KEY (id)
+//  *   );
+//  *
+//  * 2) `active` column on qr_codes (lets admin disable individual codes or
+//  *    whole batches):
+//  *
+//  *   ALTER TABLE public.qr_codes ADD COLUMN active boolean NOT NULL DEFAULT true;
+//  *
+//  * CRITICAL — this repo doesn't include your customer-facing scan/redeem
+//  * routes, so the `active` column and disable/enable buttons in the admin
+//  * panel do NOTHING on their own yet. Your scan endpoint (wherever a user
+//  * redeems a QR code) needs one extra check:
+//  *
+//  *   const { data: qr } = await supabase
+//  *     .from('qr_codes')
+//  *     .select('*')
+//  *     .eq('code', scannedCode)
+//  *     .single();
+//  *
+//  *   if (!qr.active) {
+//  *     return res.status(403).json({ error: 'This QR code has been disabled' });
+//  *   }
+//  *   // ...then your existing used/points logic
+//  *
+//  * Share that route file and it can be wired in directly, same as this one.
+//  *
+//  * `logAdminAction` below assumes `req.admin.email` is set by your
+//  * `requireAdminAuth` middleware (the same way it must already know the
+//  * admin's email to have issued the JWT at /admin/login). Adjust the
+//  * property name if your middleware attaches it differently.
+//  * ---------------------------------------------------------------------
+//  */
+
+// // const router = require('express').Router();
+// // const { supabase } = require('../lib/supabase'); // <- adjust to your setup
+// // const { requireAdminAuth } = require('../middleware/auth');       // <- adjust to your setup
+
+// // ============================================================
+// // GET /admin/users
+// // Full user directory. Powers the Users page and the dashboard's
+// // "points in circulation" stat.
+// // ============================================================
+// router.get('/admin/users', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('users')
+//       .select('id, phone, name, points, kyc_status, kyc_reference_id, pan_number, upi_id, profile_photo_url, created_at')
+//       .order('created_at', { ascending: false });
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/users failed:', err);
+//     res.status(500).json({ error: 'Could not load users' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/users/:id
+// // One user's full profile: their row, their bank_details (or null if
+// // they haven't added a payout method), their recent transactions, and
+// // their recent redemption requests. Powers the Users page detail drawer.
+// // ============================================================
+// router.get('/admin/users/:id', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+
+//   try {
+//     const [userRes, bankRes, txnRes, redemptionRes] = await Promise.all([
+//       supabase.from('users').select('*').eq('id', id).single(),
+//       supabase
+//         .from('bank_details')
+//         .select('*')
+//         .eq('user_id', id)
+//         .order('created_at', { ascending: false })
+//         .limit(1)
+//         .maybeSingle(),
+//       supabase
+//         .from('transactions')
+//         .select('id, type, points, qr_code, created_at')
+//         .eq('user_id', id)
+//         .order('created_at', { ascending: false })
+//         .limit(50),
+//       supabase
+//         .from('redemption_requests')
+//         .select(
+//           'id, points_redeemed, amount_inr, gross_amount_inr, tds_amount_inr, status, failure_reason, razorpay_payout_id, cashfree_transfer_id, created_at, updated_at'
+//         )
+//         .eq('user_id', id)
+//         .order('created_at', { ascending: false })
+//         .limit(50),
+//     ]);
+
+//     if (userRes.error) throw userRes.error;
+//     if (!userRes.data) return res.status(404).json({ error: 'User not found' });
+//     if (bankRes.error) throw bankRes.error;
+//     if (txnRes.error) throw txnRes.error;
+//     if (redemptionRes.error) throw redemptionRes.error;
+
+//     res.json({
+//       user: userRes.data,
+//       bank_details: bankRes.data || null,
+//       transactions: txnRes.data || [],
+//       redemptions: redemptionRes.data || [],
+//     });
+//   } catch (err) {
+//     console.error(`GET /admin/users/${id} failed:`, err);
+//     res.status(500).json({ error: 'Could not load user' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/transactions
+// // Every point transaction, newest first, with the user's name/phone
+// // joined in (same join pattern as the existing /admin/redemptions
+// // route). Powers the Transactions page.
+// // ============================================================
+// router.get('/admin/transactions', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('transactions')
+//       .select('id, type, points, qr_code, created_at, users ( name, phone )')
+//       .order('created_at', { ascending: false })
+//       .limit(500);
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/transactions failed:', err);
+//     res.status(500).json({ error: 'Could not load transactions' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/qr/batches/:id/codes
+// // Every code in one batch, with who scanned it (if anyone). Powers the
+// // "Codes" drawer on the QR Batches page.
+// // ============================================================
+// router.get('/admin/qr/batches/:id/codes', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+
+//   try {
+//     const { data, error } = await supabase
+//       .from('qr_codes')
+//       // qr_codes.used_by -> users.id — the constraint name below comes
+//       // straight from your schema (qr_codes_used_by_fkey). Aliased to
+//       // used_by_user so it doesn't clash with the raw `used_by` uuid.
+//       .select('code, used, used_at, active, used_by_user:users!qr_codes_used_by_fkey ( name, phone )')
+//       .eq('batch_id', id)
+//       .order('code', { ascending: true });
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`GET /admin/qr/batches/${id}/codes failed:`, err);
+//     res.status(500).json({ error: 'Could not load codes' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/redemptions  (UPDATED)
+// // Replace your existing handler with this one — same path, but now
+// // selects the full redemption_requests schema (gross amount, TDS,
+// // payout references, failure reason) and joins in the requester's
+// // bank_details so the admin panel can show payout info without a
+// // second request.
+// // ============================================================
+// router.get('/admin/redemptions', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .select(
+//         `
+//         id,
+//         points_redeemed,
+//         amount_inr,
+//         gross_amount_inr,
+//         tds_amount_inr,
+//         status,
+//         failure_reason,
+//         cashfree_transfer_id,
+//         razorpay_payout_id,
+//         created_at,
+//         updated_at,
+//         users (
+//           id,
+//           name,
+//           phone,
+//           bank_details ( method, account_holder_name, upi_id, account_number, ifsc_code, verified )
+//         )
+//       `
+//       )
+//       .order('created_at', { ascending: false })
+//       .limit(100);
+
+//     if (error) throw error;
+
+//     // Supabase nests bank_details under users(); the frontend reads it
+//     // as a sibling field (`r.bank_details`), so flatten it here.
+//     const shaped = (data || []).map((row) => {
+//       const { users, ...rest } = row;
+//       const { bank_details, ...userFields } = users || {};
+//       return { ...rest, users: userFields, bank_details: bank_details || null };
+//     });
+
+//     res.json(shaped);
+//   } catch (err) {
+//     console.error('GET /admin/redemptions failed:', err);
+//     res.status(500).json({ error: 'Could not load redemptions' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/qr-codes
+// // Server-paginated, filterable view across ALL qr_codes (not just one
+// // batch) — this table can run into the tens of thousands of rows, so it
+// // is never fetched in full. Query params: page, pageSize, q (searches
+// // the code string), batchId, status ('used' | 'unused'), active
+// // ('active' | 'inactive'). Powers the standalone QR Codes page.
+// // ============================================================
+// router.get('/admin/qr-codes', requireAdminAuth, async (req, res) => {
+//   try {
+//     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+//     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize, 10) || 20));
+//     const { q, batchId, status, active } = req.query;
+
+//     let query = supabase
+//       .from('qr_codes')
+//       .select(
+//         'code, points_value, used, used_at, active, used_by_user:users!qr_codes_used_by_fkey ( name, phone )',
+//         { count: 'exact' }
+//       );
+
+//     if (q) query = query.ilike('code', `%${q}%`);
+//     if (batchId) query = query.eq('batch_id', batchId);
+//     if (status === 'used') query = query.eq('used', true);
+//     if (status === 'unused') query = query.eq('used', false);
+//     if (active === 'active') query = query.eq('active', true);
+//     if (active === 'inactive') query = query.eq('active', false);
+
+//     const from = (page - 1) * pageSize;
+//     const to = from + pageSize - 1;
+//     query = query.order('code', { ascending: true }).range(from, to);
+
+//     const [{ data, error, count }, totalRes, usedRes, inactiveRes] = await Promise.all([
+//       query,
+//       supabase.from('qr_codes').select('code', { count: 'exact', head: true }),
+//       supabase.from('qr_codes').select('code', { count: 'exact', head: true }).eq('used', true),
+//       supabase.from('qr_codes').select('code', { count: 'exact', head: true }).eq('active', false),
+//     ]);
+
+//     if (error) throw error;
+//     if (totalRes.error) throw totalRes.error;
+//     if (usedRes.error) throw usedRes.error;
+//     if (inactiveRes.error) throw inactiveRes.error;
+
+//     const total = count || 0;
+//     const globalTotal = totalRes.count || 0;
+//     const globalUsed = usedRes.count || 0;
+//     const globalInactive = inactiveRes.count || 0;
+
+//     res.json({
+//       items: data || [],
+//       page,
+//       pageSize,
+//       total,
+//       pageCount: Math.max(1, Math.ceil(total / pageSize)),
+//       stats: {
+//         total: globalTotal,
+//         used: globalUsed,
+//         unused: globalTotal - globalUsed,
+//         inactive: globalInactive,
+//       },
+//     });
+//   } catch (err) {
+//     console.error('GET /admin/qr-codes failed:', err);
+//     res.status(500).json({ error: 'Could not load QR codes' });
+//   }
+// });
+
+// // ============================================================
+// // PATCH /admin/qr-codes/:code
+// // Body: { active: boolean }
+// // Enables or disables a single QR code. A disabled code must be rejected
+// // by your customer-facing scan/redeem endpoint — see the note at the top
+// // of this file for the exact check to add there.
+// // ============================================================
+// router.patch('/admin/qr-codes/:code', requireAdminAuth, async (req, res) => {
+//   const { code } = req.params;
+//   const { active } = req.body || {};
+
+//   if (typeof active !== 'boolean') {
+//     return res.status(400).json({ error: 'active must be true or false' });
+//   }
+
+//   try {
+//     const { data, error } = await supabase
+//       .from('qr_codes')
+//       .update({ active })
+//       .eq('code', code)
+//       .select('code, active')
+//       .single();
+
+//     if (error) throw error;
+//     if (!data) return res.status(404).json({ error: 'Code not found' });
+
+//     await logAdminAction(req, active ? 'qr_code_enabled' : 'qr_code_disabled', 'qr_codes', code, {});
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`PATCH /admin/qr-codes/${code} failed:`, err);
+//     res.status(500).json({ error: 'Could not update this code' });
+//   }
+// });
+
+// // ============================================================
+// // PATCH /admin/qr/batches/:id/toggle-active
+// // Body: { active: boolean }
+// // Bulk enables/disables every code in one batch — e.g. if a batch was
+// // printed by mistake or needs to be pulled from circulation.
+// // ============================================================
+// router.patch('/admin/qr/batches/:id/toggle-active', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { active } = req.body || {};
+
+//   if (typeof active !== 'boolean') {
+//     return res.status(400).json({ error: 'active must be true or false' });
+//   }
+
+//   try {
+//     const { error, count } = await supabase
+//       .from('qr_codes')
+//       .update({ active })
+//       .eq('batch_id', id)
+//       .select('code', { count: 'exact', head: true });
+
+//     if (error) throw error;
+
+//     await logAdminAction(req, active ? 'batch_enabled' : 'batch_disabled', 'qr_batches', id, {
+//       codes_affected: count || 0,
+//     });
+
+//     res.json({ batchId: id, active, codesAffected: count || 0 });
+//   } catch (err) {
+//     console.error(`PATCH /admin/qr/batches/${id}/toggle-active failed:`, err);
+//     res.status(500).json({ error: 'Could not update this batch' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/bank-details
+// // Every payout method on file, with the owning user's name/phone
+// // joined in. Powers the Payout Methods page.
+// // ============================================================
+// router.get('/admin/bank-details', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('bank_details')
+//       .select(
+//         'id, method, account_holder_name, upi_id, account_number, ifsc_code, verified, created_at, updated_at, users ( name, phone )'
+//       )
+//       .order('created_at', { ascending: false });
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/bank-details failed:', err);
+//     res.status(500).json({ error: 'Could not load bank details' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/otp-verifications
+// // Recent OTP requests, for support/abuse debugging. Deliberately never
+// // selects otp_hash — that column should never leave the database, even
+// // to an authenticated admin session. Powers the OTP Verifications page.
+// // ============================================================
+// router.get('/admin/otp-verifications', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('otp_verifications')
+//       .select('id, phone, verified, attempts, expires_at, created_at') // no otp_hash, on purpose
+//       .order('created_at', { ascending: false })
+//       .limit(200);
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/otp-verifications failed:', err);
+//     res.status(500).json({ error: 'Could not load OTP verifications' });
+//   }
+// });
+
+// // ============================================================
+// // logAdminAction — writes one row to admin_actions. Every write route
+// // below calls this after its main write succeeds, so a logging failure
+// // never blocks the actual action; it's swallowed and just logged.
+// // ============================================================
+// async function logAdminAction(req, actionType, targetType, targetId, details) {
+//   try {
+//     await supabase.from('admin_actions').insert({
+//       admin_email: req.admin?.email || 'unknown',
+//       action_type: actionType,
+//       target_type: targetType,
+//       target_id: targetId ? String(targetId) : null,
+//       details: details || {},
+//     });
+//   } catch (err) {
+//     console.error('logAdminAction failed (action itself still succeeded):', err);
+//   }
+// }
+
+// // ============================================================
+// // PATCH /admin/redemptions/:id
+// // Body: { status: 'approved' | 'rejected', note?: string }
+// // Approves or rejects a pending redemption request. On reject, `note` is
+// // stored as failure_reason. Powers the Approve/Reject buttons on the
+// // Redemptions page.
+// // ============================================================
+// router.patch('/admin/redemptions/:id', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { status, note } = req.body || {};
+
+//   if (!['approved', 'rejected'].includes(status)) {
+//     return res.status(400).json({ error: 'status must be "approved" or "rejected"' });
+//   }
+
+//   try {
+//     const updates = { status, updated_at: new Date().toISOString() };
+//     if (status === 'rejected') updates.failure_reason = note || null;
+
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .update(updates)
+//       .eq('id', id)
+//       .select()
+//       .single();
+
+//     if (error) throw error;
+
+//     await logAdminAction(req, `redemption_${status}`, 'redemption_requests', id, { note });
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`PATCH /admin/redemptions/${id} failed:`, err);
+//     res.status(500).json({ error: 'Could not update redemption' });
+//   }
+// });
+
+// // ============================================================
+// // POST /admin/redemptions/:id/retry
+// // Resets a failed redemption back to 'pending' so your payout worker
+// // picks it up again, and clears the previous failure_reason. This does
+// // NOT re-trigger Razorpay/Cashfree itself — wire that call in wherever
+// // this comment is, using your existing payout integration.
+// // ============================================================
+// router.post('/admin/redemptions/:id/retry', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+
+//   try {
+//     const { data: existing, error: fetchError } = await supabase
+//       .from('redemption_requests')
+//       .select('status')
+//       .eq('id', id)
+//       .single();
+//     if (fetchError) throw fetchError;
+//     if (!existing) return res.status(404).json({ error: 'Redemption not found' });
+//     if (existing.status !== 'failed') {
+//       return res.status(400).json({ error: 'Only failed redemptions can be retried' });
+//     }
+
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .update({ status: 'pending', failure_reason: null, updated_at: new Date().toISOString() })
+//       .eq('id', id)
+//       .select()
+//       .single();
+//     if (error) throw error;
+
+//     // TODO: call your Razorpay/Cashfree payout trigger here so the retry
+//     // actually re-attempts the transfer, not just resets the DB status.
+
+//     await logAdminAction(req, 'redemption_retry', 'redemption_requests', id, {});
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`POST /admin/redemptions/${id}/retry failed:`, err);
+//     res.status(500).json({ error: 'Could not retry payout' });
+//   }
+// });
+
+// // ============================================================
+// // POST /admin/users/:id/adjust-points
+// // Body: { delta: number, reason: string }
+// // Manually credits (positive delta) or debits (negative delta) a user's
+// // points balance — e.g. refunding a support complaint. Writes a
+// // transactions row (type: 'admin_adjustment') so it shows up in that
+// // user's history and the Transactions page, same as any other point
+// // movement. Powers "Adjust points" on the Users page.
+// // ============================================================
+// router.post('/admin/users/:id/adjust-points', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { delta, reason } = req.body || {};
+
+//   if (!delta || typeof delta !== 'number' || Number.isNaN(delta)) {
+//     return res.status(400).json({ error: 'delta must be a non-zero number' });
+//   }
+//   if (!reason || !reason.trim()) {
+//     return res.status(400).json({ error: 'reason is required' });
+//   }
+
+//   try {
+//     const { data: user, error: userError } = await supabase
+//       .from('users')
+//       .select('points')
+//       .eq('id', id)
+//       .single();
+//     if (userError) throw userError;
+//     if (!user) return res.status(404).json({ error: 'User not found' });
+
+//     const newBalance = (user.points || 0) + delta;
+//     if (newBalance < 0) {
+//       return res.status(400).json({ error: 'This would take the user below zero points' });
+//     }
+
+//     const { error: updateError } = await supabase.from('users').update({ points: newBalance }).eq('id', id);
+//     if (updateError) throw updateError;
+
+//     const { error: txnError } = await supabase.from('transactions').insert({
+//       user_id: id,
+//       type: 'admin_adjustment',
+//       points: delta,
+//       qr_code: null,
+//     });
+//     if (txnError) throw txnError;
+
+//     await logAdminAction(req, 'points_adjusted', 'users', id, { delta, reason, new_balance: newBalance });
+
+//     res.json({ points: newBalance });
+//   } catch (err) {
+//     console.error(`POST /admin/users/${id}/adjust-points failed:`, err);
+//     res.status(500).json({ error: 'Could not adjust points' });
+//   }
+// });
+
+// // ============================================================
+// // PATCH /admin/users/:id/kyc
+// // Body: { kycStatus: 'verified' | 'rejected', reason?: string }
+// // Powers "Verify KYC" / "Reject KYC" on the Users page.
+// // ============================================================
+// router.patch('/admin/users/:id/kyc', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { kycStatus, reason } = req.body || {};
+
+//   if (!['verified', 'rejected', 'pending'].includes(kycStatus)) {
+//     return res.status(400).json({ error: 'kycStatus must be "verified", "rejected", or "pending"' });
+//   }
+
+//   try {
+//     const { data, error } = await supabase
+//       .from('users')
+//       .update({ kyc_status: kycStatus })
+//       .eq('id', id)
+//       .select()
+//       .single();
+//     if (error) throw error;
+//     if (!data) return res.status(404).json({ error: 'User not found' });
+
+//     await logAdminAction(req, `kyc_${kycStatus}`, 'users', id, { reason });
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`PATCH /admin/users/${id}/kyc failed:`, err);
+//     res.status(500).json({ error: 'Could not update KYC status' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/activity-log
+// // Every admin_actions row, newest first. Powers the Activity Log page.
+// // ============================================================
+// router.get('/admin/activity-log', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('admin_actions')
+//       .select('id, admin_email, action_type, target_type, target_id, details, created_at')
+//       .order('created_at', { ascending: false })
+//       .limit(300);
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/activity-log failed:', err);
+//     res.status(500).json({ error: 'Could not load activity log' });
+//   }
+// });
+
+// module.exports = router;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// const express = require('express');
+// const bcrypt = require('bcryptjs');
+// const jwt = require('jsonwebtoken');
+// const crypto = require('crypto');
+// const QRCode = require('qrcode');
+// const PDFDocument = require('pdfkit');
+// const supabase = require('../db');
+// const requireAdminAuth = require('../adminAuth');
+
+// const router = express.Router();
+
+// router.post('/admin/login', async (req, res) => {
+//   const { email, password } = req.body;
+
+//   if (email !== process.env.ADMIN_EMAIL) {
+//     return res.status(401).json({ error: 'Invalid credentials' });
+//   }
+
+//   const isValid = await bcrypt.compare(password || '', process.env.ADMIN_PASSWORD_HASH || '');
+//   if (!isValid) {
+//     return res.status(401).json({ error: 'Invalid credentials' });
+//   }
+
+//   const token = jwt.sign({ isAdmin: true, email }, process.env.ADMIN_JWT_SECRET, { expiresIn: '12h' });
+//   res.json({ token });
+// });
+
+// // --- Products (still useful for reporting/organization, no longer required for points) ---
+
+// router.get('/admin/products', requireAdminAuth, async (req, res) => {
+//   const { data, error } = await supabase.from('products').select('*').order('created_at', { ascending: false });
+//   if (error) return res.status(500).json({ error: 'Could not load products' });
+//   res.json(data);
+// });
+
+// router.post('/admin/products', requireAdminAuth, async (req, res) => {
+//   const { name, pointsValue } = req.body;
+//   if (!name || !Number.isInteger(pointsValue) || pointsValue <= 0) {
+//     return res.status(400).json({ error: 'Valid name and pointsValue required' });
+//   }
+
+//   const { data, error } = await supabase
+//     .from('products')
+//     .insert({ name, points_value: pointsValue })
+//     .select()
+//     .single();
+
+//   if (error) return res.status(500).json({ error: 'Could not create product' });
+//   res.json(data);
+// });
+
+// router.put('/admin/products/:id', requireAdminAuth, async (req, res) => {
+//   const { name, pointsValue } = req.body;
+//   const updates = {};
+//   if (name) updates.name = name;
+//   if (Number.isInteger(pointsValue) && pointsValue > 0) updates.points_value = pointsValue;
+
+//   if (Object.keys(updates).length === 0) {
+//     return res.status(400).json({ error: 'Nothing to update' });
+//   }
+
+//   const { data, error } = await supabase
+//     .from('products')
+//     .update(updates)
+//     .eq('id', req.params.id)
+//     .select()
+//     .single();
+
+//   if (error) return res.status(500).json({ error: 'Could not update product' });
+//   res.json(data);
+// });
+
+// // --- Redemption requests ---
+// // (the full GET /admin/redemptions handler — with bank_details, TDS, etc.
+// // — lives further down, alongside the approve/reject/retry routes, so
+// // there's only one definition instead of two competing ones)
+
+// // --- QR codes ---
+
+// function generateCode() {
+//   return 'GNA-' + crypto.randomBytes(5).toString('hex').toUpperCase();
+// }
+
+// // THE FIX: pointsValue now comes directly from the request, not from a
+// // product lookup. productId is optional - only used for organizing/reporting.
+// router.post('/admin/qr/generate', requireAdminAuth, async (req, res) => {
+//   const { pointsValue, quantity, label, productId } = req.body;
+
+//   if (!Number.isInteger(pointsValue) || pointsValue <= 0) {
+//     return res.status(400).json({ error: 'Valid pointsValue required (whole number, greater than 0)' });
+//   }
+//   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 5000) {
+//     return res.status(400).json({ error: 'quantity must be between 1 and 5000' });
+//   }
+//   if (!label || !label.trim()) {
+//     return res.status(400).json({ error: 'label required, e.g. "Pune-Aug2026-50pts"' });
+//   }
+
+//   const { data: batch, error: batchError } = await supabase
+//     .from('qr_batches')
+//     .insert({
+//       product_id: productId || null,
+//       label: label.trim(),
+//       quantity,
+//       points_value: pointsValue,
+//     })
+//     .select()
+//     .single();
+
+//   if (batchError) {
+//     console.error('Supabase batch insert error:', batchError);
+//     return res.status(500).json({ error: 'Could not create batch' });
+//   }
+
+//   const codes = [];
+//   for (let i = 0; i < quantity; i++) {
+//     codes.push({
+//       code: generateCode(),
+//       points_value: pointsValue,
+//       product_id: productId || null,
+//       batch_id: batch.id,
+//     });
+//   }
+
+//   const { error: insertError } = await supabase.from('qr_codes').insert(codes);
+
+//   if (insertError) {
+//     console.error('Supabase qr_codes insert error:', insertError);
+//     return res.status(500).json({ error: 'Could not create QR codes, please try again' });
+//   }
+
+//   res.json({
+//     batchId: batch.id,
+//     label: batch.label,
+//     quantity,
+//     pointsValue,
+//     message: `${quantity} QR codes generated, ${pointsValue} points each`,
+//   });
+// });
+
+// router.get('/admin/qr/batches', requireAdminAuth, async (req, res) => {
+//   const { data, error } = await supabase
+//     .from('qr_batches')
+//     .select('*, products(name)')
+//     .order('created_at', { ascending: false });
+
+//   if (error) return res.status(500).json({ error: 'Could not load batches' });
+//   res.json(data);
+// });
+
+// // Print-ready, WhatsApp-shareable PDF. Accepts the admin token either as a
+// // normal Authorization header OR as ?token=... in the URL - the second form
+// // lets you paste the link straight into a browser tab and download it,
+// // since browsers can't attach custom headers when you just click a link.
+// router.get('/admin/qr/batches/:id/pdf', requireAdminAuth, async (req, res) => {
+//   const { data: batch, error: batchError } = await supabase
+//     .from('qr_batches')
+//     .select('*, products(name)')
+//     .eq('id', req.params.id)
+//     .single();
+
+//   if (batchError || !batch) return res.status(404).json({ error: 'Batch not found' });
+
+//   const { data: codes, error: codesError } = await supabase
+//     .from('qr_codes')
+//     .select('code, points_value')
+//     .eq('batch_id', req.params.id)
+//     .order('created_at', { ascending: true });
+
+//   if (codesError) return res.status(500).json({ error: 'Could not load QR codes' });
+
+//   const safeFilename = batch.label.replace(/[^a-z0-9]/gi, '_');
+//   res.setHeader('Content-Type', 'application/pdf');
+//   res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}.pdf"`);
+
+//   const doc = new PDFDocument({ size: 'A4', margin: 30 });
+//   doc.pipe(res);
+
+//   const qrSize = 120;
+//   const cols = 4;
+//   const marginX = 30;
+//   const cellWidth = (doc.page.width - marginX * 2) / cols;
+
+//   const productLabel = batch.products?.name ? ` (${batch.products.name})` : '';
+//   doc.fontSize(14).text(`${batch.label}${productLabel} - ${batch.points_value} pts each`, { align: 'center' });
+//   doc.moveDown();
+
+//   let y = doc.y + 10;
+//   let col = 0;
+
+//   for (const { code, points_value } of codes) {
+//     const qrImage = await QRCode.toDataURL(code, { margin: 0, width: qrSize });
+//     const imgBuffer = Buffer.from(qrImage.split(',')[1], 'base64');
+
+//     if (y + qrSize + 30 > doc.page.height - 40) {
+//       doc.addPage();
+//       y = 40;
+//       col = 0;
+//     }
+
+//     const x = marginX + col * cellWidth + (cellWidth - qrSize) / 2;
+//     doc.image(imgBuffer, x, y, { width: qrSize, height: qrSize });
+//     doc.fontSize(8).text(code, marginX + col * cellWidth, y + qrSize + 4, { width: cellWidth, align: 'center' });
+//     doc
+//       .fontSize(8)
+//       .fillColor('#0B4A47')
+//       .text(`${points_value} pts`, marginX + col * cellWidth, y + qrSize + 16, { width: cellWidth, align: 'center' })
+//       .fillColor('black');
+
+//     col++;
+//     if (col >= cols) {
+//       col = 0;
+//       y += qrSize + 40;
+//     }
+//   }
+
+//   doc.end();
+// });
+
+// module.exports = router;
+
+// /**
+//  * Giana Ledger — new admin routes
+//  * ---------------------------------------------------------------------
+//  * Paste these into your existing `routes/admin.js`, on the same router
+//  * that already serves `/admin/login`, `/admin/products`, `/admin/qr/*`,
+//  * and `/admin/redemptions`. They assume:
+//  *
+//  *   - `router`            an express.Router() already mounted at /api/admin
+//  *   - `requireAdminAuth`  your existing auth middleware
+//  *   - `supabase`          your existing @supabase/supabase-js client
+//  *
+//  * If your file imports/names these differently, just adjust the top of
+//  * this snippet — the route bodies don't need to change.
+//  *
+//  * Every response shape here matches what the admin frontend already
+//  * calls via src/api/client.js (listUsers, getUser, listTransactions,
+//  * listBatchCodes, listQrCodes, listBankDetails, listOtpVerifications) —
+//  * no frontend changes needed once these are live.
+//  *
+//  * Routes included below:
+//  *   GET   /admin/users
+//  *   GET   /admin/users/:id
+//  *   GET   /admin/transactions
+//  *   GET   /admin/qr/batches/:id/codes
+//  *   GET   /admin/qr-codes            (server-paginated, all batches)
+//  *   GET   /admin/bank-details
+//  *   GET   /admin/otp-verifications   (never selects otp_hash)
+//  *   GET   /admin/redemptions         (UPDATED — replace your existing one)
+//  *   PATCH /admin/redemptions/:id             approve / reject a request
+//  *   POST  /admin/redemptions/:id/retry       re-queue a failed payout
+//  *   POST  /admin/users/:id/adjust-points     manual points credit/debit
+//  *   PATCH /admin/users/:id/kyc               verify / reject KYC
+//  *   GET   /admin/activity-log                audit trail of the above
+//  *
+//  * IMPORTANT — one new table required for the last five routes:
+//  * `admin_actions` doesn't exist in your schema yet. Run this migration
+//  * first (adjust owner/RLS as you do for your other tables):
+//  *
+//  *   CREATE TABLE public.admin_actions (
+//  *     id uuid NOT NULL DEFAULT gen_random_uuid(),
+//  *     admin_email text NOT NULL,
+//  *     action_type text NOT NULL,
+//  *     target_type text NOT NULL,
+//  *     target_id text,
+//  *     details jsonb,
+//  *     created_at timestamp with time zone NOT NULL DEFAULT now(),
+//  *     CONSTRAINT admin_actions_pkey PRIMARY KEY (id)
+//  *   );
+//  *
+//  * `logAdminAction` below assumes `req.admin.email` is set by your
+//  * `requireAdminAuth` middleware (the same way it must already know the
+//  * admin's email to have issued the JWT at /admin/login). Adjust the
+//  * property name if your middleware attaches it differently.
+//  * ---------------------------------------------------------------------
+//  */
+
+// // const router = require('express').Router();
+// // const { supabase } = require('../lib/supabase'); // <- adjust to your setup
+// // const { requireAdminAuth } = require('../middleware/auth');       // <- adjust to your setup
+
+// // ============================================================
+// // GET /admin/users
+// // Full user directory. Powers the Users page and the dashboard's
+// // "points in circulation" stat.
+// // ============================================================
+// router.get('/admin/users', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('users')
+//       .select('id, phone, name, points, kyc_status, kyc_reference_id, pan_number, upi_id, created_at')
+//       .order('created_at', { ascending: false });
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/users failed:', err);
+//     res.status(500).json({ error: 'Could not load users' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/users/:id
+// // One user's full profile: their row, their bank_details (or null if
+// // they haven't added a payout method), their recent transactions, and
+// // their recent redemption requests. Powers the Users page detail drawer.
+// // ============================================================
+// router.get('/admin/users/:id', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+
+//   try {
+//     const [userRes, bankRes, txnRes, redemptionRes] = await Promise.all([
+//       supabase.from('users').select('*').eq('id', id).single(),
+//       supabase.from('bank_details').select('*').eq('user_id', id).maybeSingle(),
+//       supabase
+//         .from('transactions')
+//         .select('id, type, points, qr_code, created_at')
+//         .eq('user_id', id)
+//         .order('created_at', { ascending: false })
+//         .limit(50),
+//       supabase
+//         .from('redemption_requests')
+//         .select(
+//           'id, points_redeemed, amount_inr, gross_amount_inr, tds_amount_inr, status, failure_reason, razorpay_payout_id, cashfree_transfer_id, created_at, updated_at'
+//         )
+//         .eq('user_id', id)
+//         .order('created_at', { ascending: false })
+//         .limit(50),
+//     ]);
+
+//     if (userRes.error) throw userRes.error;
+//     if (!userRes.data) return res.status(404).json({ error: 'User not found' });
+//     if (bankRes.error) throw bankRes.error;
+//     if (txnRes.error) throw txnRes.error;
+//     if (redemptionRes.error) throw redemptionRes.error;
+
+//     res.json({
+//       user: userRes.data,
+//       bank_details: bankRes.data || null,
+//       transactions: txnRes.data || [],
+//       redemptions: redemptionRes.data || [],
+//     });
+//   } catch (err) {
+//     console.error(`GET /admin/users/${id} failed:`, err);
+//     res.status(500).json({ error: 'Could not load user' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/transactions
+// // Every point transaction, newest first, with the user's name/phone
+// // joined in (same join pattern as the existing /admin/redemptions
+// // route). Powers the Transactions page.
+// // ============================================================
+// router.get('/admin/transactions', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('transactions')
+//       .select('id, type, points, qr_code, created_at, users ( name, phone )')
+//       .order('created_at', { ascending: false })
+//       .limit(500);
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/transactions failed:', err);
+//     res.status(500).json({ error: 'Could not load transactions' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/qr/batches/:id/codes
+// // Every code in one batch, with who scanned it (if anyone). Powers the
+// // "Codes" drawer on the QR Batches page.
+// // ============================================================
+// router.get('/admin/qr/batches/:id/codes', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+
+//   try {
+//     const { data, error } = await supabase
+//       .from('qr_codes')
+//       // qr_codes.used_by -> users.id — the constraint name below comes
+//       // straight from your schema (qr_codes_used_by_fkey). Aliased to
+//       // used_by_user so it doesn't clash with the raw `used_by` uuid.
+//       .select('code, used, used_at, used_by_user:users!qr_codes_used_by_fkey ( name, phone )')
+//       .eq('batch_id', id)
+//       .order('code', { ascending: true });
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`GET /admin/qr/batches/${id}/codes failed:`, err);
+//     res.status(500).json({ error: 'Could not load codes' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/redemptions  (UPDATED)
+// // Replace your existing handler with this one — same path, but now
+// // selects the full redemption_requests schema (gross amount, TDS,
+// // payout references, failure reason) and joins in the requester's
+// // bank_details so the admin panel can show payout info without a
+// // second request.
+// // ============================================================
+// router.get('/admin/redemptions', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .select(
+//         `
+//         id,
+//         points_redeemed,
+//         amount_inr,
+//         gross_amount_inr,
+//         tds_amount_inr,
+//         status,
+//         failure_reason,
+//         cashfree_transfer_id,
+//         razorpay_payout_id,
+//         created_at,
+//         updated_at,
+//         users (
+//           id,
+//           name,
+//           phone,
+//           bank_details ( method, account_holder_name, upi_id, account_number, ifsc_code, verified )
+//         )
+//       `
+//       )
+//       .order('created_at', { ascending: false })
+//       .limit(100);
+
+//     if (error) throw error;
+
+//     // Supabase nests bank_details under users(); the frontend reads it
+//     // as a sibling field (`r.bank_details`), so flatten it here.
+//     const shaped = (data || []).map((row) => {
+//       const { users, ...rest } = row;
+//       const { bank_details, ...userFields } = users || {};
+//       return { ...rest, users: userFields, bank_details: bank_details || null };
+//     });
+
+//     res.json(shaped);
+//   } catch (err) {
+//     console.error('GET /admin/redemptions failed:', err);
+//     res.status(500).json({ error: 'Could not load redemptions' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/qr-codes
+// // Server-paginated, filterable view across ALL qr_codes (not just one
+// // batch) — this table can run into the tens of thousands of rows, so it
+// // is never fetched in full. Query params: page, pageSize, q (searches
+// // the code string), batchId, status ('used' | 'unused').
+// // Powers the standalone QR Codes page.
+// // ============================================================
+// router.get('/admin/qr-codes', requireAdminAuth, async (req, res) => {
+//   try {
+//     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+//     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize, 10) || 20));
+//     const { q, batchId, status } = req.query;
+
+//     let query = supabase
+//       .from('qr_codes')
+//       .select('code, points_value, used, used_at, used_by_user:users!qr_codes_used_by_fkey ( name, phone )', {
+//         count: 'exact',
+//       });
+
+//     if (q) query = query.ilike('code', `%${q}%`);
+//     if (batchId) query = query.eq('batch_id', batchId);
+//     if (status === 'used') query = query.eq('used', true);
+//     if (status === 'unused') query = query.eq('used', false);
+
+//     const from = (page - 1) * pageSize;
+//     const to = from + pageSize - 1;
+//     query = query.order('code', { ascending: true }).range(from, to);
+
+//     const [{ data, error, count }, totalRes, usedRes] = await Promise.all([
+//       query,
+//       supabase.from('qr_codes').select('code', { count: 'exact', head: true }),
+//       supabase.from('qr_codes').select('code', { count: 'exact', head: true }).eq('used', true),
+//     ]);
+
+//     if (error) throw error;
+//     if (totalRes.error) throw totalRes.error;
+//     if (usedRes.error) throw usedRes.error;
+
+//     const total = count || 0;
+//     const globalTotal = totalRes.count || 0;
+//     const globalUsed = usedRes.count || 0;
+
+//     res.json({
+//       items: data || [],
+//       page,
+//       pageSize,
+//       total,
+//       pageCount: Math.max(1, Math.ceil(total / pageSize)),
+//       stats: { total: globalTotal, used: globalUsed, unused: globalTotal - globalUsed },
+//     });
+//   } catch (err) {
+//     console.error('GET /admin/qr-codes failed:', err);
+//     res.status(500).json({ error: 'Could not load QR codes' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/bank-details
+// // Every payout method on file, with the owning user's name/phone
+// // joined in. Powers the Payout Methods page.
+// // ============================================================
+// router.get('/admin/bank-details', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('bank_details')
+//       .select(
+//         'id, method, account_holder_name, upi_id, account_number, ifsc_code, verified, created_at, updated_at, users ( name, phone )'
+//       )
+//       .order('created_at', { ascending: false });
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/bank-details failed:', err);
+//     res.status(500).json({ error: 'Could not load bank details' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/otp-verifications
+// // Recent OTP requests, for support/abuse debugging. Deliberately never
+// // selects otp_hash — that column should never leave the database, even
+// // to an authenticated admin session. Powers the OTP Verifications page.
+// // ============================================================
+// router.get('/admin/otp-verifications', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('otp_verifications')
+//       .select('id, phone, verified, attempts, expires_at, created_at') // no otp_hash, on purpose
+//       .order('created_at', { ascending: false })
+//       .limit(200);
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/otp-verifications failed:', err);
+//     res.status(500).json({ error: 'Could not load OTP verifications' });
+//   }
+// });
+
+// // ============================================================
+// // logAdminAction — writes one row to admin_actions. Every write route
+// // below calls this after its main write succeeds, so a logging failure
+// // never blocks the actual action; it's swallowed and just logged.
+// // ============================================================
+// async function logAdminAction(req, actionType, targetType, targetId, details) {
+//   try {
+//     await supabase.from('admin_actions').insert({
+//       admin_email: req.admin?.email || 'unknown',
+//       action_type: actionType,
+//       target_type: targetType,
+//       target_id: targetId ? String(targetId) : null,
+//       details: details || {},
+//     });
+//   } catch (err) {
+//     console.error('logAdminAction failed (action itself still succeeded):', err);
+//   }
+// }
+
+// // ============================================================
+// // PATCH /admin/redemptions/:id
+// // Body: { status: 'approved' | 'rejected', note?: string }
+// // Approves or rejects a pending redemption request. On reject, `note` is
+// // stored as failure_reason. Powers the Approve/Reject buttons on the
+// // Redemptions page.
+// // ============================================================
+// router.patch('/admin/redemptions/:id', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { status, note } = req.body || {};
+
+//   if (!['approved', 'rejected'].includes(status)) {
+//     return res.status(400).json({ error: 'status must be "approved" or "rejected"' });
+//   }
+
+//   try {
+//     const updates = { status, updated_at: new Date().toISOString() };
+//     if (status === 'rejected') updates.failure_reason = note || null;
+
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .update(updates)
+//       .eq('id', id)
+//       .select()
+//       .single();
+
+//     if (error) throw error;
+
+//     await logAdminAction(req, `redemption_${status}`, 'redemption_requests', id, { note });
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`PATCH /admin/redemptions/${id} failed:`, err);
+//     res.status(500).json({ error: 'Could not update redemption' });
+//   }
+// });
+
+// // ============================================================
+// // POST /admin/redemptions/:id/retry
+// // Resets a failed redemption back to 'pending' so your payout worker
+// // picks it up again, and clears the previous failure_reason. This does
+// // NOT re-trigger Razorpay/Cashfree itself — wire that call in wherever
+// // this comment is, using your existing payout integration.
+// // ============================================================
+// router.post('/admin/redemptions/:id/retry', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+
+//   try {
+//     const { data: existing, error: fetchError } = await supabase
+//       .from('redemption_requests')
+//       .select('status')
+//       .eq('id', id)
+//       .single();
+//     if (fetchError) throw fetchError;
+//     if (!existing) return res.status(404).json({ error: 'Redemption not found' });
+//     if (existing.status !== 'failed') {
+//       return res.status(400).json({ error: 'Only failed redemptions can be retried' });
+//     }
+
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .update({ status: 'pending', failure_reason: null, updated_at: new Date().toISOString() })
+//       .eq('id', id)
+//       .select()
+//       .single();
+//     if (error) throw error;
+
+//     // TODO: call your Razorpay/Cashfree payout trigger here so the retry
+//     // actually re-attempts the transfer, not just resets the DB status.
+
+//     await logAdminAction(req, 'redemption_retry', 'redemption_requests', id, {});
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`POST /admin/redemptions/${id}/retry failed:`, err);
+//     res.status(500).json({ error: 'Could not retry payout' });
+//   }
+// });
+
+// // ============================================================
+// // POST /admin/users/:id/adjust-points
+// // Body: { delta: number, reason: string }
+// // Manually credits (positive delta) or debits (negative delta) a user's
+// // points balance — e.g. refunding a support complaint. Writes a
+// // transactions row (type: 'admin_adjustment') so it shows up in that
+// // user's history and the Transactions page, same as any other point
+// // movement. Powers "Adjust points" on the Users page.
+// // ============================================================
+// router.post('/admin/users/:id/adjust-points', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { delta, reason } = req.body || {};
+
+//   if (!delta || typeof delta !== 'number' || Number.isNaN(delta)) {
+//     return res.status(400).json({ error: 'delta must be a non-zero number' });
+//   }
+//   if (!reason || !reason.trim()) {
+//     return res.status(400).json({ error: 'reason is required' });
+//   }
+
+//   try {
+//     const { data: user, error: userError } = await supabase
+//       .from('users')
+//       .select('points')
+//       .eq('id', id)
+//       .single();
+//     if (userError) throw userError;
+//     if (!user) return res.status(404).json({ error: 'User not found' });
+
+//     const newBalance = (user.points || 0) + delta;
+//     if (newBalance < 0) {
+//       return res.status(400).json({ error: 'This would take the user below zero points' });
+//     }
+
+//     const { error: updateError } = await supabase.from('users').update({ points: newBalance }).eq('id', id);
+//     if (updateError) throw updateError;
+
+//     const { error: txnError } = await supabase.from('transactions').insert({
+//       user_id: id,
+//       type: 'admin_adjustment',
+//       points: delta,
+//       qr_code: null,
+//     });
+//     if (txnError) throw txnError;
+
+//     await logAdminAction(req, 'points_adjusted', 'users', id, { delta, reason, new_balance: newBalance });
+
+//     res.json({ points: newBalance });
+//   } catch (err) {
+//     console.error(`POST /admin/users/${id}/adjust-points failed:`, err);
+//     res.status(500).json({ error: 'Could not adjust points' });
+//   }
+// });
+
+// // ============================================================
+// // PATCH /admin/users/:id/kyc
+// // Body: { kycStatus: 'verified' | 'rejected', reason?: string }
+// // Powers "Verify KYC" / "Reject KYC" on the Users page.
+// // ============================================================
+// router.patch('/admin/users/:id/kyc', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { kycStatus, reason } = req.body || {};
+
+//   if (!['verified', 'rejected', 'pending'].includes(kycStatus)) {
+//     return res.status(400).json({ error: 'kycStatus must be "verified", "rejected", or "pending"' });
+//   }
+
+//   try {
+//     const { data, error } = await supabase
+//       .from('users')
+//       .update({ kyc_status: kycStatus })
+//       .eq('id', id)
+//       .select()
+//       .single();
+//     if (error) throw error;
+//     if (!data) return res.status(404).json({ error: 'User not found' });
+
+//     await logAdminAction(req, `kyc_${kycStatus}`, 'users', id, { reason });
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`PATCH /admin/users/${id}/kyc failed:`, err);
+//     res.status(500).json({ error: 'Could not update KYC status' });
+//   }
+// });
+
+// // ============================================================
+// // GET /admin/activity-log
+// // Every admin_actions row, newest first. Powers the Activity Log page.
+// // ============================================================
+// router.get('/admin/activity-log', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('admin_actions')
+//       .select('id, admin_email, action_type, target_type, target_id, details, created_at')
+//       .order('created_at', { ascending: false })
+//       .limit(300);
+
+//     if (error) throw error;
+//     res.json(data);
+//   } catch (err) {
+//     console.error('GET /admin/activity-log failed:', err);
+//     res.status(500).json({ error: 'Could not load activity log' });
+//   }
+// });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const { sendSms } = require('../twilioClient');
+
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -1123,17 +3758,23 @@ router.get('/admin/users/:id', requireAdminAuth, async (req, res) => {
   try {
     const [userRes, bankRes, txnRes, redemptionRes] = await Promise.all([
       supabase.from('users').select('*').eq('id', id).single(),
-      supabase.from('bank_details').select('*').eq('user_id', id).maybeSingle(),
+      supabase
+        .from('bank_details')
+        .select('*')
+        .eq('user_id', id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
       supabase
         .from('transactions')
-        .select('id, type, points, qr_code, created_at')
+        .select('id, type, points, qr_code, latitude, longitude, location_address, created_at')
         .eq('user_id', id)
         .order('created_at', { ascending: false })
         .limit(50),
       supabase
         .from('redemption_requests')
         .select(
-          'id, points_redeemed, amount_inr, gross_amount_inr, tds_amount_inr, status, failure_reason, razorpay_payout_id, cashfree_transfer_id, created_at, updated_at'
+          'id, points_redeemed, amount_inr, gross_amount_inr, tds_amount_inr, status, failure_reason, razorpay_payout_id, cashfree_transfer_id, latitude, longitude, location_address, created_at, updated_at'
         )
         .eq('user_id', id)
         .order('created_at', { ascending: false })
@@ -1168,7 +3809,7 @@ router.get('/admin/transactions', requireAdminAuth, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('transactions')
-      .select('id, type, points, qr_code, created_at, users ( name, phone )')
+      .select('id, type, points, qr_code, latitude, longitude, location_address, created_at, users ( name, phone )')
       .order('created_at', { ascending: false })
       .limit(500);
 
@@ -1214,6 +3855,56 @@ router.get('/admin/qr/batches/:id/codes', requireAdminAuth, async (req, res) => 
 // bank_details so the admin panel can show payout info without a
 // second request.
 // ============================================================
+// router.get('/admin/redemptions', requireAdminAuth, async (req, res) => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .select(
+//         `
+//         id,
+//         points_redeemed,
+//         amount_inr,
+//         gross_amount_inr,
+//         tds_amount_inr,
+//         status,
+//         failure_reason,
+//         cashfree_transfer_id,
+//         razorpay_payout_id,
+//         latitude,
+//         longitude,
+//         location_address,
+//         created_at,
+//         updated_at,
+//         users (
+//           id,
+//           name,
+//           phone,
+//           bank_details ( method, account_holder_name, upi_id, account_number, ifsc_code, verified )
+//         )
+//       `
+//       )
+//       .order('created_at', { ascending: false })
+//       .limit(100);
+
+//     if (error) throw error;
+
+//     // Supabase nests bank_details under users(); the frontend reads it
+//     // as a sibling field (`r.bank_details`), so flatten it here.
+//     const shaped = (data || []).map((row) => {
+//       const { users, ...rest } = row;
+//       const { bank_details, ...userFields } = users || {};
+//       return { ...rest, users: userFields, bank_details: bank_details || null };
+//     });
+
+//     res.json(shaped);
+//   } catch (err) {
+//     console.error('GET /admin/redemptions failed:', err);
+//     res.status(500).json({ error: 'Could not load redemptions' });
+//   }
+// });
+
+
+
 router.get('/admin/redemptions', requireAdminAuth, async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -1221,43 +3912,57 @@ router.get('/admin/redemptions', requireAdminAuth, async (req, res) => {
       .select(
         `
         id,
+        user_id,
+        method,
         points_redeemed,
         amount_inr,
         gross_amount_inr,
         tds_amount_inr,
         status,
         failure_reason,
+        payment_reference,
         cashfree_transfer_id,
         razorpay_payout_id,
+        latitude,
+        longitude,
+        location_address,
         created_at,
         updated_at,
-        users (
-          id,
-          name,
-          phone,
-          bank_details ( method, account_holder_name, upi_id, account_number, ifsc_code, verified )
-        )
+        users ( id, name, phone )
       `
       )
       .order('created_at', { ascending: false })
       .limit(100);
-
+ 
     if (error) throw error;
-
-    // Supabase nests bank_details under users(); the frontend reads it
-    // as a sibling field (`r.bank_details`), so flatten it here.
+ 
+    const userIds = [...new Set((data || []).map((r) => r.user_id))];
+    const { data: bankRows, error: bankError } = await supabase
+      .from('bank_details')
+      .select('user_id, method, account_holder_name, upi_id, account_number, ifsc_code, verified')
+      .in('user_id', userIds.length ? userIds : ['00000000-0000-0000-0000-000000000000']);
+ 
+    if (bankError) throw bankError;
+ 
     const shaped = (data || []).map((row) => {
-      const { users, ...rest } = row;
-      const { bank_details, ...userFields } = users || {};
-      return { ...rest, users: userFields, bank_details: bank_details || null };
+      const matchingBank = (bankRows || []).find(
+        (b) => b.user_id === row.user_id && b.method === row.method
+      );
+      return { ...row, bank_details: matchingBank || null };
     });
-
+ 
     res.json(shaped);
   } catch (err) {
     console.error('GET /admin/redemptions failed:', err);
     res.status(500).json({ error: 'Could not load redemptions' });
   }
 });
+
+
+
+
+
+
 
 // ============================================================
 // GET /admin/qr-codes
@@ -1466,35 +4171,269 @@ async function logAdminAction(req, actionType, targetType, targetId, details) {
 // stored as failure_reason. Powers the Approve/Reject buttons on the
 // Redemptions page.
 // ============================================================
+// router.patch('/admin/redemptions/:id', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { status, note } = req.body || {};
+
+//   if (!['approved', 'rejected'].includes(status)) {
+//     return res.status(400).json({ error: 'status must be "approved" or "rejected"' });
+//   }
+
+//   try {
+//     const updates = { status, updated_at: new Date().toISOString() };
+//     if (status === 'rejected') updates.failure_reason = note || null;
+
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .update(updates)
+//       .eq('id', id)
+//       .select()
+//       .single();
+
+//     if (error) throw error;
+
+//     await logAdminAction(req, `redemption_${status}`, 'redemption_requests', id, { note });
+
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`PATCH /admin/redemptions/${id} failed:`, err);
+//     res.status(500).json({ error: 'Could not update redemption' });
+//   }
+// });
+
+
+
+
+
+// router.patch('/admin/redemptions/:id', requireAdminAuth, async (req, res) => {
+//   const { id } = req.params;
+//   const { status, note } = req.body || {};
+ 
+//   if (!['approved', 'rejected'].includes(status)) {
+//     return res.status(400).json({ error: 'status must be "approved" or "rejected"' });
+//   }
+ 
+//   try {
+//     // Fetch first - need the user's phone for the SMS, and must refuse to
+//     // double-process something that's already been decided (otherwise a
+//     // double-click could deduct points twice).
+//     const { data: existing, error: fetchError } = await supabase
+//       .from('redemption_requests')
+//       .select('*, users(phone)')
+//       .eq('id', id)
+//       .single();
+ 
+//     if (fetchError) throw fetchError;
+//     if (!existing) return res.status(404).json({ error: 'Redemption not found' });
+//     if (existing.status !== 'pending') {
+//       return res.status(400).json({ error: `This request is already ${existing.status}, not pending` });
+//     }
+ 
+//     const updates = { status, updated_at: new Date().toISOString() };
+//     if (status === 'rejected') updates.failure_reason = note || null;
+ 
+//     const { data, error } = await supabase
+//       .from('redemption_requests')
+//       .update(updates)
+//       .eq('id', id)
+//       .select()
+//       .single();
+ 
+//     if (error) throw error;
+ 
+//     if (status === 'approved') {
+//       // Manual payments: this PATCH call IS the admin confirming they've
+//       // already sent the money by hand - only NOW do the points actually
+//       // leave the user's real balance.
+//       await supabase.rpc('increment_user_points', {
+//         p_user_id: existing.user_id,
+//         p_amount: -existing.points_redeemed,
+//       });
+//     }
+ 
+//     await logAdminAction(req, `redemption_${status}`, 'redemption_requests', id, { note });
+ 
+//     // Best-effort SMS - a failed text should never block the actual
+//     // approve/reject, which has already succeeded by this point.
+//     try {
+//       const message =
+//         status === 'approved'
+//           ? `Vaya Rewards: Your redemption of Rs.${existing.amount_inr} has been paid! Thank you for being a Giana Rewards member.`
+//           : `Vaya Rewards: Your redemption request could not be processed. Reason: ${note || 'Please contact support'}.`;
+//       await sendSms(existing.users.phone, message);
+//     } catch (smsError) {
+//       console.error('Redemption status SMS error:', smsError);
+//     }
+ 
+//     res.json(data);
+//   } catch (err) {
+//     console.error(`PATCH /admin/redemptions/${id} failed:`, err);
+//     res.status(500).json({ error: 'Could not update redemption' });
+//   }
+// });
+
+
+
+
+
+
+
+
+
+
+ 
 router.patch('/admin/redemptions/:id', requireAdminAuth, async (req, res) => {
   const { id } = req.params;
-  const { status, note } = req.body || {};
-
+  const { status, note, paymentReference } = req.body || {};
+ 
   if (!['approved', 'rejected'].includes(status)) {
     return res.status(400).json({ error: 'status must be "approved" or "rejected"' });
   }
-
+  if (status === 'approved' && (!paymentReference || !paymentReference.trim())) {
+    return res.status(400).json({ error: 'Payment reference number is required to approve' });
+  }
+ 
   try {
+    const { data: existing, error: fetchError } = await supabase
+      .from('redemption_requests')
+      .select('*, users(phone)')
+      .eq('id', id)
+      .single();
+ 
+    if (fetchError) throw fetchError;
+    if (!existing) return res.status(404).json({ error: 'Redemption not found' });
+    if (existing.status !== 'pending') {
+      return res.status(400).json({ error: `This request is already ${existing.status}, not pending` });
+    }
+ 
     const updates = { status, updated_at: new Date().toISOString() };
     if (status === 'rejected') updates.failure_reason = note || null;
-
+    if (status === 'approved') updates.payment_reference = paymentReference.trim();
+ 
     const { data, error } = await supabase
       .from('redemption_requests')
       .update(updates)
       .eq('id', id)
       .select()
       .single();
-
+ 
     if (error) throw error;
-
-    await logAdminAction(req, `redemption_${status}`, 'redemption_requests', id, { note });
-
+ 
+    if (status === 'approved') {
+      // Manual payments: this PATCH call IS the admin confirming they've
+      // already sent the money by hand - only NOW do the points actually
+      // leave the user's real balance.
+      await supabase.rpc('increment_user_points', {
+        p_user_id: existing.user_id,
+        p_amount: -existing.points_redeemed,
+      });
+    }
+ 
+    await logAdminAction(req, `redemption_${status}`, 'redemption_requests', id, { note, paymentReference });
+ 
+    // Best-effort SMS - a failed text should never block the actual
+    // approve/reject, which has already succeeded by this point.
+    try {
+      const message =
+        status === 'approved'
+          ? `Vaya Rewards: Your redemption of Rs.${existing.amount_inr} has been paid! Ref: ${paymentReference.trim()}. Thank you for being a Giana Rewards member.`
+          : `Vaya Rewards: Your redemption request could not be processed. Reason: ${note || 'Please contact support'}.`;
+      await sendSms(existing.users.phone, message);
+    } catch (smsError) {
+      console.error('Redemption status SMS error:', smsError);
+    }
+ 
     res.json(data);
   } catch (err) {
     console.error(`PATCH /admin/redemptions/${id} failed:`, err);
     res.status(500).json({ error: 'Could not update redemption' });
   }
 });
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // ============================================================
 // POST /admin/redemptions/:id/retry

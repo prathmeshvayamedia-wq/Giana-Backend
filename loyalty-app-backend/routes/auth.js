@@ -163,6 +163,11 @@ function generateOtp() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+function generateReferralCode() {
+  const random = require('crypto').randomBytes(4).toString('hex').toUpperCase();
+  return `GIANA-${random}`;
+}
+
 // STEP 1: user enters their phone number, we text them an OTP.
 // router.post('/send-otp', async (req, res) => {
 //   const { phone } = req.body;
@@ -264,7 +269,8 @@ router.post('/verify-otp', async (req, res) => {
   if (!user) {
     const { data: newUser, error: createError } = await supabase
       .from('users')
-      .insert({ phone })
+      // .insert({ phone })
+      .insert({ phone, referral_code: generateReferralCode() })
       .select()
       .single();
     if (createError) return res.status(500).json({ error: 'Could not create user' });

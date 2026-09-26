@@ -10,19 +10,35 @@ const redeemRoutes = require('./routes/redeem');
 const webhookRoutes = require('./routes/webhook');
 const adminRoutes = require('./routes/admin');
 const profileRoutes = require('./routes/profile');
+const referralRoutes = require('./routes/referral');
 
 const app = express();
 app.use(cors());
 // verify callback stashes the raw request bytes on req.rawBody - the
 // RazorpayX webhook signature is computed over these exact original bytes,
 // so we can't just re-stringify req.body later and expect a match.
+// app.use(
+//   express.json({
+//     verify: (req, res, buf) => {
+//       req.rawBody = buf;
+//     },
+//   })
+// );
+
 app.use(
   express.json({
+    limit: '5mb', // documents/photos are base64-encoded, which inflates
+                    // their size ~33% - without raising this, uploads over
+                    // ~100kb (Express's default limit) get silently
+                    // rejected with an HTML error page instead of JSON,
+                    // which is what was causing "JSON parse error" on the
+                    // frontend when it tried to parse that HTML as JSON.
     verify: (req, res, buf) => {
       req.rawBody = buf;
     },
   })
 );
+
 
 // All routes live under /api - keeps things organized as the app grows
 app.use('/api/auth', authRoutes);
@@ -33,18 +49,13 @@ app.use('/api', redeemRoutes);
 app.use('/api', webhookRoutes);
 app.use('/api', adminRoutes);
 app.use('/api', profileRoutes);
+app.use('/api', referralRoutes);
 
 app.get('/', (req, res) => {
   res.json({ status: 'Loyalty app backend is running' });
 });
 
 const PORT = process.env.PORT || 3000;
-
-// Sirf local development mein listen karo, Vercel serverless mein nahi
-if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
-
-module.exports = app;
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
