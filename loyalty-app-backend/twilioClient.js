@@ -48,89 +48,89 @@
 
 
 
-// const twilio = require('twilio');
+const twilio = require('twilio');
 
-// // Reads credentials from .env - never hardcode these in code.
-// const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+// Reads credentials from .env - never hardcode these in code.
+const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
-// // Sends the OTP as an SMS. Phone numbers must be in E.164 format (+91XXXXXXXXXX).
-// // Throws if Twilio rejects the send (e.g. unverified number in trial mode,
-// // invalid number format, or - once you're past testing - a number blocked
-// // because DLT isn't set up yet for India).
-// async function sendOtpSms(phone, otp) {
-//   const toNumber = phone.startsWith('+') ? phone : `+91${phone}`; // assume India if no country code given
-
-//   return client.messages.create({
-//     body: `Your Vaya Rewards verification code is ${otp}. Valid for 5 minutes. Do not share this code with anyone.`,
-//     from: process.env.TWILIO_PHONE_NUMBER,
-//     to: toNumber,
-//   });
-// }
-
-// // Generic SMS sender - used for anything that isn't the OTP flow (e.g.
-// // "your redemption was paid" notifications). Kept separate from
-// // sendOtpSms so the OTP flow's message format never accidentally changes.
-// async function sendSms(phone, message) {
-//   const toNumber = phone.startsWith('+') ? phone : `+91${phone}`;
-
-//   return client.messages.create({
-//     body: message,
-//     from: process.env.TWILIO_PHONE_NUMBER,
-//     to: toNumber,
-//   });
-// }
-
-// module.exports = { sendOtpSms, sendSms };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-const API_KEY = process.env.TWOFACTOR_API_KEY;
-
-function normalizePhone(phone) {
-  const digits = String(phone).replace(/\D/g, '');
-  return digits.length === 10 ? `91${digits}` : digits;
-}
-
+// Sends the OTP as an SMS. Phone numbers must be in E.164 format (+91XXXXXXXXXX).
+// Throws if Twilio rejects the send (e.g. unverified number in trial mode,
+// invalid number format, or - once you're past testing - a number blocked
+// because DLT isn't set up yet for India).
 async function sendOtpSms(phone, otp) {
-  const url = `https://2factor.in/API/V1/${API_KEY}/SMS/${normalizePhone(phone)}/${otp}`;
-  const res = await fetch(url);
-  const data = await res.json().catch(() => ({}));
-  if (data.Status !== 'Success') {
-    // Don't log the URL; it contains your API key.
-    throw new Error(`2Factor send failed: ${data.Details || res.statusText}`);
-  }
-  return data;
+  const toNumber = phone.startsWith('+') ? phone : `+91${phone}`; // assume India if no country code given
+
+  return client.messages.create({
+    body: `Your Vaya Rewards verification code is ${otp}. Valid for 5 minutes. Do not share this code with anyone.`,
+    from: process.env.TWILIO_PHONE_NUMBER,
+    to: toNumber,
+  });
 }
 
-module.exports = { sendOtpSms /* keep sendSms until you decide how to send notifications */ };
+// Generic SMS sender - used for anything that isn't the OTP flow (e.g.
+// "your redemption was paid" notifications). Kept separate from
+// sendOtpSms so the OTP flow's message format never accidentally changes.
+async function sendSms(phone, message) {
+  const toNumber = phone.startsWith('+') ? phone : `+91${phone}`;
+
+  return client.messages.create({
+    body: message,
+    from: process.env.TWILIO_PHONE_NUMBER,
+    to: toNumber,
+  });
+}
+
+module.exports = { sendOtpSms, sendSms };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// const API_KEY = process.env.TWOFACTOR_API_KEY;
+
+// function normalizePhone(phone) {
+//   const digits = String(phone).replace(/\D/g, '');
+//   return digits.length === 10 ? `91${digits}` : digits;
+// }
+
+// async function sendOtpSms(phone, otp) {
+//   const url = `https://2factor.in/API/V1/${API_KEY}/SMS/${normalizePhone(phone)}/${otp}`;
+//   const res = await fetch(url);
+//   const data = await res.json().catch(() => ({}));
+//   if (data.Status !== 'Success') {
+//     // Don't log the URL; it contains your API key.
+//     throw new Error(`2Factor send failed: ${data.Details || res.statusText}`);
+//   }
+//   return data;
+// }
+
+// module.exports = { sendOtpSms /* keep sendSms until you decide how to send notifications */ };
 
 
 
