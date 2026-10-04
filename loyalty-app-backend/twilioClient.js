@@ -48,39 +48,39 @@
 
 
 
-const twilio = require('twilio');
+// const twilio = require('twilio');
 
-// Reads credentials from .env - never hardcode these in code.
-const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+// // Reads credentials from .env - never hardcode these in code.
+// const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
-// Sends the OTP as an SMS. Phone numbers must be in E.164 format (+91XXXXXXXXXX).
-// Throws if Twilio rejects the send (e.g. unverified number in trial mode,
-// invalid number format, or - once you're past testing - a number blocked
-// because DLT isn't set up yet for India).
-async function sendOtpSms(phone, otp) {
-  const toNumber = phone.startsWith('+') ? phone : `+91${phone}`; // assume India if no country code given
+// // Sends the OTP as an SMS. Phone numbers must be in E.164 format (+91XXXXXXXXXX).
+// // Throws if Twilio rejects the send (e.g. unverified number in trial mode,
+// // invalid number format, or - once you're past testing - a number blocked
+// // because DLT isn't set up yet for India).
+// async function sendOtpSms(phone, otp) {
+//   const toNumber = phone.startsWith('+') ? phone : `+91${phone}`; // assume India if no country code given
 
-  return client.messages.create({
-    body: `Your Vaya Rewards verification code is ${otp}. Valid for 5 minutes. Do not share this code with anyone.`,
-    from: process.env.TWILIO_PHONE_NUMBER,
-    to: toNumber,
-  });
-}
+//   return client.messages.create({
+//     body: `Your Vaya Rewards verification code is ${otp}. Valid for 5 minutes. Do not share this code with anyone.`,
+//     from: process.env.TWILIO_PHONE_NUMBER,
+//     to: toNumber,
+//   });
+// }
 
-// Generic SMS sender - used for anything that isn't the OTP flow (e.g.
-// "your redemption was paid" notifications). Kept separate from
-// sendOtpSms so the OTP flow's message format never accidentally changes.
-async function sendSms(phone, message) {
-  const toNumber = phone.startsWith('+') ? phone : `+91${phone}`;
+// // Generic SMS sender - used for anything that isn't the OTP flow (e.g.
+// // "your redemption was paid" notifications). Kept separate from
+// // sendOtpSms so the OTP flow's message format never accidentally changes.
+// async function sendSms(phone, message) {
+//   const toNumber = phone.startsWith('+') ? phone : `+91${phone}`;
 
-  return client.messages.create({
-    body: message,
-    from: process.env.TWILIO_PHONE_NUMBER,
-    to: toNumber,
-  });
-}
+//   return client.messages.create({
+//     body: message,
+//     from: process.env.TWILIO_PHONE_NUMBER,
+//     to: toNumber,
+//   });
+// }
 
-module.exports = { sendOtpSms, sendSms };
+// module.exports = { sendOtpSms, sendSms };
 
 
 
@@ -271,3 +271,123 @@ module.exports = { sendOtpSms, sendSms };
 // }
 
 // module.exports = { sendOtpSms, sendSms };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// renflairClient.js
+const BASE_URL = 'https://sms.renflair.in/V1.php';
+
+// Renflair expects a plain 10-digit Indian number (no +91 / 91 prefix).
+function toPlainIndianNumber(phone) {
+  const digits = String(phone).replace(/\D/g, '');
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+async function sendOtpSms(phone, otp) {
+  const params = new URLSearchParams({
+    API: process.env.RENFLAIR_API_KEY, // from .env, never hardcode
+    PHONE: toPlainIndianNumber(phone),
+    OTP: String(otp),
+  });
+
+  const res = await fetch(`${BASE_URL}?${params}`);
+  const data = await res.json().catch(() => null);
+
+  // Don't log the URL anywhere; it contains your API key.
+  if (!res.ok || !data) {
+    throw new Error(`Renflair send failed: HTTP ${res.status}`);
+  }
+  // Renflair's response shape isn't documented in what you pasted;
+  // log `data` once on a test send and tighten this check to match.
+  if (data.status === false || data.return === false || data.error) {
+    throw new Error(`Renflair send failed: ${data.message || JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+// Renflair's API (from the docs you shared) only sends OTPs, with a fixed
+// template, so there's no custom-text endpoint. Fail loudly instead of
+// silently sending the wrong thing.
+async function sendSms() {
+  throw new Error('Renflair does not support custom SMS text; use another provider for notifications.');
+}
+
+module.exports = { sendOtpSms, sendSms };
