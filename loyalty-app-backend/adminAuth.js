@@ -126,10 +126,8 @@ function requireAdminAuth(req, res, next) {
     if (!decoded.isAdmin) {
       return res.status(403).json({ error: 'Not authorized' });
     }
-    // THE FIX: attach the decoded payload (includes `email`, set at
-    // /admin/login) to req.admin. Without this, req.admin was always
-    // undefined downstream - which is why logAdminAction() in admin.js
-    // fell back to 'unknown' for every single activity log entry.
+    // Attach the decoded payload (includes `email`, set at /admin/login) to
+    // req.admin so logAdminAction() in admin.js gets the real admin email.
     req.admin = decoded;
     next();
   } catch (err) {
