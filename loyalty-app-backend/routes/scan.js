@@ -586,9 +586,9 @@ router.post('/scan', requireAuth, async (req, res) => {
     return res.status(404).json({ error: 'User not found' });
   }
 
-  if (scanningUser.kyc_status !== 'verified') {
-    return res.status(403).json({ error: 'Complete your KYC verification before scanning QR codes' });
-  }
+  // if (scanningUser.kyc_status !== 'verified') {
+  //   return res.status(403).json({ error: 'Complete your KYC verification before scanning QR codes' });
+  // }
 
   // STEP 1: Does this QR code even exist in our system?
   const { data: qrRecord, error: qrError } = await supabase
