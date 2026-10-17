@@ -1,4 +1,4 @@
-module.exports = router;
+
 
 const { sendSms } = require('../twilioClient');
 
@@ -1104,3 +1104,8 @@ router.patch('/admin/redemptions/:id', requireAdminAuth, async (req, res) => {
     res.status(500).json({ error: 'Could not update redemption' });
   }
 });
+
+
+
+
+module.exports = router;
