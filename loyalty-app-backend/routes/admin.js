@@ -1108,4 +1108,138 @@ router.patch('/admin/redemptions/:id', requireAdminAuth, async (req, res) => {
 
 
 
+// ============================================================
+// POST /admin/redemptions/:id/retry
+// ============================================================
+router.post('/admin/redemptions/:id/retry', requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const { data: existing, error: fetchError } = await supabase
+      .from('redemption_requests')
+      .select('status')
+      .eq('id', id)
+      .single();
+    if (fetchError) throw fetchError;
+    if (!existing) return res.status(404).json({ error: 'Redemption not found' });
+    if (existing.status !== 'failed') {
+      return res.status(400).json({ error: 'Only failed redemptions can be retried' });
+    }
+
+    const { data, error } = await supabase
+      .from('redemption_requests')
+      .update({ status: 'pending', failure_reason: null, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+
+    await logAdminAction(req, 'redemption_retry', 'redemption_requests', id, {});
+
+    res.json(data);
+  } catch (err) {
+    console.error(`POST /admin/redemptions/${id}/retry failed:`, err);
+    res.status(500).json({ error: 'Could not retry payout' });
+  }
+});
+
+// ============================================================
+// POST /admin/users/:id/adjust-points
+// Body: { delta: number, reason: string }
+// ============================================================
+router.post('/admin/users/:id/adjust-points', requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  const { delta, reason } = req.body || {};
+
+  if (!delta || typeof delta !== 'number' || Number.isNaN(delta)) {
+    return res.status(400).json({ error: 'delta must be a non-zero number' });
+  }
+  if (!reason || !reason.trim()) {
+    return res.status(400).json({ error: 'reason is required' });
+  }
+
+  try {
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('points')
+      .eq('id', id)
+      .single();
+    if (userError) throw userError;
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const newBalance = (user.points || 0) + delta;
+    if (newBalance < 0) {
+      return res.status(400).json({ error: 'This would take the user below zero points' });
+    }
+
+    const { error: updateError } = await supabase.from('users').update({ points: newBalance }).eq('id', id);
+    if (updateError) throw updateError;
+
+    const { error: txnError } = await supabase.from('transactions').insert({
+      user_id: id,
+      type: 'admin_adjustment',
+      points: delta,
+      qr_code: null,
+    });
+    if (txnError) throw txnError;
+
+    await logAdminAction(req, 'points_adjusted', 'users', id, { delta, reason, new_balance: newBalance });
+
+    res.json({ points: newBalance });
+  } catch (err) {
+    console.error(`POST /admin/users/${id}/adjust-points failed:`, err);
+    res.status(500).json({ error: 'Could not adjust points' });
+  }
+});
+
+// ============================================================
+// PATCH /admin/users/:id/kyc
+// Body: { kycStatus: 'verified' | 'rejected' | 'pending', reason?: string }
+// ============================================================
+router.patch('/admin/users/:id/kyc', requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  const { kycStatus, reason } = req.body || {};
+
+  if (!['verified', 'rejected', 'pending'].includes(kycStatus)) {
+    return res.status(400).json({ error: 'kycStatus must be "verified", "rejected", or "pending"' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .update({ kyc_status: kycStatus })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'User not found' });
+
+    await logAdminAction(req, `kyc_${kycStatus}`, 'users', id, { reason });
+
+    res.json(data);
+  } catch (err) {
+    console.error(`PATCH /admin/users/${id}/kyc failed:`, err);
+    res.status(500).json({ error: 'Could not update KYC status' });
+  }
+});
+
+// ============================================================
+// GET /admin/activity-log
+// ============================================================
+router.get('/admin/activity-log', requireAdminAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('admin_actions')
+      .select('id, admin_email, action_type, target_type, target_id, details, created_at')
+      .order('created_at', { ascending: false })
+      .limit(300);
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error('GET /admin/activity-log failed:', err);
+    res.status(500).json({ error: 'Could not load activity log' });
+  }
+});
+
 module.exports = router;
